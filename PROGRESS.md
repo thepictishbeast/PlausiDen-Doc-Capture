@@ -43,3 +43,36 @@ Cumulative state:
 - rxing absorption follow-up tracked separately
 
 Next phase queued: Phase 2 — doc-capture-server (axum HTTP, /capture endpoint wiring all decoders).
+
+## Iter #2 result — Phase 2 ✅
+
+Shipped `doc-capture-server`:
+- axum HTTP server, binary at `/usr/local/bin/doc-capture-server` (when installed)
+- 3 endpoints: `GET /health`, `GET /info`, `POST /capture` (multipart)
+- `pipeline` module orchestrates wired stages (MRZ + PDF417/AAMVA today; OCR/tamper/face TODO)
+- `handlers` module parses multipart + delegates to pipeline + shapes response
+- `state` module: in-memory `SessionStore` + `Config` from env vars (`DOC_CAPTURE_LISTEN_ADDR`, `DOC_CAPTURE_MAX_IMAGE_BYTES`, `DOC_CAPTURE_LOG_LEVEL`)
+- `lib.rs` exposes `build_router()` so integration tests can drive without TCP
+
+Cross-validator: when both MRZ and AAMVA produce claims, surname mismatch is recorded as a stage error (loose match — case-insensitive, punctuation-stripped, whitespace-collapsed).
+
+Attestation construction:
+- Per-field SHA-256 hashes (salt + name + value), 8 baseline fields + issuing_state when present
+- Default disclosure: issuing_state + age_over_18 (computed from DOB)
+- Raw PII never in response body, never in logs
+
+7 unit tests + 6 integration tests:
+- /health returns "ok"
+- /info returns valid JSON with stages_wired=[mrz, pdf417_aamva]
+- /capture with empty multipart → verified=false, no attestation, no errors
+- /capture with ICAO MRZ → verified=true, surname hash present, age_over_18=true
+- /capture with synthesized PDF417 PNG of AAMVA payload → verified=true, IIN=636040, state=UT
+- /capture with corrupt back-image bytes → verified=false with pdf417 stage_error
+
+Cumulative state:
+- 5 crates (core + mrz + aamva + pdf417 + server)
+- 44/44 tests passing
+- Zero "Sacred|sacredvote|voter\b" hits in *.rs/*.toml
+- Sidecar can serve real /capture requests against PDF417 input today
+
+Next phase queued: Phase 3 — doc-capture-ocr Tesseract adapter (feature-gated; native dep).
