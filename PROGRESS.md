@@ -76,3 +76,21 @@ Cumulative state:
 - Sidecar can serve real /capture requests against PDF417 input today
 
 Next phase queued: Phase 3 — doc-capture-ocr Tesseract adapter (feature-gated; native dep).
+
+## Iter #6 result — Phase 6 ✅
+
+Shipped end-to-end integration tests proving all 5 stages cohere:
+
+`maximalist_e2e_all_five_stages_fire` — single POST with selfie + front + back + mrz_lines → ALL 5 stages fire, attestation populated, `verified=true`. Uses pre-loaded MockOcr + MockFace fixtures (constructed via the new `build_router_with_state` + `with_ocr_engine` / `with_face_engine` injection seams) so the test owns the full input space. ICAO ERIKSSON example MRZ paired with a hand-crafted AAMVA payload (surname=ERIKSSON, given=ANNA MARIA, dob=1974-08-12, exp=2012-04-15) so the cross-validator passes. Synthetic JPEG fronts + selfies keep ELA scores low.
+
+`cross_validator_catches_surname_mismatch` — same shape but with AAMVA surname=DOE while MRZ says ERIKSSON. Asserts `verified=false` and a stage_error containing "cross-validation".
+
+Server lib gained `build_router_with_state(AppState)` and re-exported `AppState` publicly so tests + production deployments can both inject custom engines without going through the default `new()` Mocks.
+
+Cumulative state:
+- 8 crates, 63/63 tests (8 + 6 + 14 + 5 + 3 + 7 + 8 + 6 + 6)
+- All 5 stages have wired adapters AND a passing e2e test
+- Zero "Sacred|sacredvote|voter\b" hits
+- Sidecar is functionally complete from an HTTP-API perspective
+
+Next phase queued: Phase 7 — NixOS module + systemd unit + Caddy reverse-proxy snippet for production deploy. After that, the substrate is shippable.
