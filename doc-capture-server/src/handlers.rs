@@ -232,21 +232,32 @@ async fn parse_multipart(
 }
 
 /// Read field bytes into a Vec, enforcing the per-file cap.
+///
+/// Streams the field chunk-by-chunk and aborts the moment the
+/// accumulated length would exceed `max_bytes`, rather than buffering
+/// the whole field first. This bounds per-field memory to roughly
+/// `max_bytes` (plus one in-flight chunk) instead of the route's
+/// total body limit, shrinking the memory-exhaustion amplification an
+/// oversized single part could otherwise cause.
 async fn read_image_bytes(
-    field: axum::extract::multipart::Field<'_>,
+    mut field: axum::extract::multipart::Field<'_>,
     max_bytes: usize,
 ) -> Result<Vec<u8>, (StatusCode, String)> {
-    let bytes = field
-        .bytes()
+    let mut buf = Vec::new();
+    while let Some(chunk) = field
+        .chunk()
         .await
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("image read: {e}")))?;
-    if bytes.len() > max_bytes {
-        return Err((
-            StatusCode::PAYLOAD_TOO_LARGE,
-            format!("image exceeds {max_bytes} bytes"),
-        ));
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("image read: {e}")))?
+    {
+        if buf.len() + chunk.len() > max_bytes {
+            return Err((
+                StatusCode::PAYLOAD_TOO_LARGE,
+                format!("image exceeds {max_bytes} bytes"),
+            ));
+        }
+        buf.extend_from_slice(&chunk);
     }
-    Ok(bytes.to_vec())
+    Ok(buf)
 }
 
 impl IntoResponse for crate::pipeline::CaptureOutput {

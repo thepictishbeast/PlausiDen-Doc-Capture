@@ -222,6 +222,30 @@ async fn capture_accepts_upload_above_default_2mib_body_limit() {
     assert_eq!(res.status(), StatusCode::OK);
 }
 
+/// A single image field larger than the per-file `max_image_bytes`
+/// cap (8 MiB default) must be rejected with 413 by the handler —
+/// even though it fits within the route's total body limit. Locks in
+/// the per-field cap independent of the body limit.
+#[tokio::test]
+async fn capture_oversized_single_image_returns_413() {
+    let app = doc_capture_server::build_router();
+    // 9 MiB > 8 MiB default per-file cap, < ~24 MiB route body limit.
+    let front = vec![0x7Eu8; 9 * 1024 * 1024];
+    let body = multipart_image_body(&[("front", front)]);
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/capture")
+                .header("content-type", "multipart/form-data; boundary=BOUNDARY")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::PAYLOAD_TOO_LARGE);
+}
+
 // ─── helpers ────────────────────────────────────────────────────
 
 /// Build a multipart body with only text fields. Boundary is fixed
