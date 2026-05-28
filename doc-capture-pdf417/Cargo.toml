@@ -1,0 +1,24 @@
+[package]
+name = "doc-capture-pdf417"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "PDF417 binary barcode decoder (image bytes -> AAMVA text). Wraps rxing for the heavy lift; exposes a small, typed adapter."
+
+[dependencies]
+doc-capture-core = { path = "../doc-capture-core" }
+thiserror.workspace = true
+
+# rxing is the de-facto Rust ZXing port. Heavy dep tree (~80 transitive
+# crates including image-decoding, Reed-Solomon, AC-3 detection). Until
+# the AVP-2 absorption pass for rxing is complete this is consumed via
+# a vendored adapter — callers see only the small typed surface in
+# `decode_pdf417_from_image_bytes`, never rxing types directly. That
+# keeps the absorption path open: we can swap to a hardened fork
+# without touching consumer call sites.
+rxing = "0.9"
+
+[dev-dependencies]
+image = "0.25"
