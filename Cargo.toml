@@ -19,7 +19,8 @@
 members = [
     "doc-capture-core",
     "doc-capture-mrz",
-    # doc-capture-pdf417    — phase 1, AAMVA decoder
+    "doc-capture-aamva",
+    # doc-capture-pdf417    — phase 1b, PDF417 binary decoder
     # doc-capture-tamper    — phase 4, Error-Level Analysis
     # doc-capture-server    — phase 2, axum HTTP server
 ]
