@@ -94,3 +94,41 @@ Cumulative state:
 - Sidecar is functionally complete from an HTTP-API perspective
 
 Next phase queued: Phase 7 — NixOS module + systemd unit + Caddy reverse-proxy snippet for production deploy. After that, the substrate is shippable.
+
+## Iter #7 result — Phase 7 ✅ — SUBSTRATE COMPLETE
+
+Shipped `infra/` deployment artifacts:
+
+`infra/nixos/module.nix` — NixOS module declaring:
+- `services.doc-capture-server.enable` + 6 options (listenAddr, maxImageBytes, logLevel, user, group, extraEnvironment, package)
+- Dedicated `doc-capture` system user/group
+- Systemd unit with full sandboxing posture (NoNewPrivileges, ProtectSystem=strict, PrivateTmp, MemoryDenyWriteExecute, SystemCallFilter=@system-service, etc.)
+- Resource limits: MemoryMax=1G, TasksMax=256, LimitNOFILE=4096
+
+`infra/systemd/doc-capture-server.service` — equivalent unit file for non-Nix hosts. Same sandboxing directives. Operator installs via `sudo cp + systemctl daemon-reload + enable --now`.
+
+`infra/caddy/Caddyfile.snippet` — TLS-terminating reverse-proxy fronting the loopback-bound sidecar. Caps multipart at 32 MiB at Caddy layer. Active health-checks `/health` every 30s with 2s timeout. Forwards X-Real-IP for future rate-limit/audit features.
+
+`infra/README.md` — deployment guide covering all 3 paths + smoke-test commands + production checklist.
+
+README.md Status section updated: all 7 phases shipped ✅.
+
+## All-phases summary
+
+| Phase | Crate / Artifact | Status |
+|-------|------------------|--------|
+| 0 | doc-capture-core + doc-capture-mrz | ✅ |
+| 1a | doc-capture-aamva | ✅ |
+| 1b | doc-capture-pdf417 | ✅ |
+| 2 | doc-capture-server | ✅ |
+| 3 | doc-capture-ocr | ✅ |
+| 4 | doc-capture-tamper | ✅ |
+| 5 | doc-capture-face | ✅ |
+| 6 | maximalist e2e test | ✅ |
+| 7 | infra/ (NixOS + systemd + Caddy) | ✅ |
+
+**Final state:** 8 crates, 63 tests, zero "Sacred/sacredvote/voter" leakage, end-to-end `/capture` call demonstrably succeeds via the maximalist integration test that runs all 5 stages against synthetic inputs.
+
+Stop condition met: all 7 phases shipped AND the e2e `/capture` call works (proven by `maximalist_e2e_all_five_stages_fire` test). Substrate is functionally complete and deployment-ready.
+
+Loop should retire — CronDelete next.

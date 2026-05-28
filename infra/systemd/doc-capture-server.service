@@ -1,0 +1,69 @@
+# PlausiDen-Doc-Capture systemd unit (non-Nix deployments).
+#
+# Install to /etc/systemd/system/doc-capture-server.service.
+# Adjust ExecStart path to where doc-capture-server is installed.
+# Create user/group first:
+#
+#   useradd --system --no-create-home --shell /usr/sbin/nologin doc-capture
+#
+# Then:
+#
+#   systemctl daemon-reload
+#   systemctl enable --now doc-capture-server
+#
+# Logs:    journalctl -u doc-capture-server -f
+# Status:  systemctl status doc-capture-server
+# Health:  curl -fsS http://127.0.0.1:7444/health
+
+[Unit]
+Description=PlausiDen document-capture identity-verification sidecar
+Documentation=https://github.com/thepictishbeast/PlausiDen-Doc-Capture
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/doc-capture-server
+Restart=on-failure
+RestartSec=5s
+
+User=doc-capture
+Group=doc-capture
+
+Environment=DOC_CAPTURE_LISTEN_ADDR=127.0.0.1:7444
+Environment=DOC_CAPTURE_MAX_IMAGE_BYTES=8388608
+Environment=DOC_CAPTURE_LOG_LEVEL=info
+
+# ── Sandboxing ────────────────────────────────────────────────────
+# Mirrors the NixOS module's serviceConfig hardening directives so
+# the systemd posture is identical regardless of deploy path.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+LimitNOFILE=4096
+MemoryMax=1G
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target

@@ -144,11 +144,21 @@ compose into whatever broader trust pipeline they need.
 
 - **Phase 0** ✅ workspace scaffold + ICAO 9303 MRZ parser
 - **Phase 1a** ✅ AAMVA Card Design Standard decoder
-- **Phase 1b** PDF417 binary decoder
-- **Phase 2** axum HTTP server + `/health`, `/info`, `/capture` stubs
-- **Phase 3** Tesseract integration (feature-gated)
-- **Phase 4** tamper detection (ELA)
-- **Phase 5** face-match stub → real model
+- **Phase 1b** ✅ PDF417 binary decoder (rxing wrapper)
+- **Phase 2** ✅ axum HTTP server + `/health`, `/info`, `/capture`
+- **Phase 3** ✅ OCR adapter (trait + Mock; Tesseract CLI feature-gated)
+- **Phase 4** ✅ tamper detection (Error-Level Analysis)
+- **Phase 5** ✅ face match + liveness (trait + Mock)
+- **Phase 6** ✅ end-to-end integration test (all 5 stages, one POST)
+- **Phase 7** ✅ NixOS module + systemd unit + Caddy snippet (`infra/`)
+
+**63/63 tests across 8 crates.** Substrate is functionally complete:
+- HTTP API serves real `/capture` requests end-to-end
+- All 5 pipeline stages wired with adapter traits + Mock impls
+- One feature-gated real engine (`tesseract-cli`) + reserved feature
+  names for future engines (`insightface-onnx`, `dlib-rs`)
+- Deployment-ready via NixOS module, systemd unit, or Caddy reverse-
+  proxy snippet (see `infra/README.md`)
 
 ## License
 

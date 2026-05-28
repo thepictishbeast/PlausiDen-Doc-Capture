@@ -1,0 +1,57 @@
+# PlausiDen-Doc-Capture — Caddy reverse-proxy snippet.
+#
+# Drop into the same Caddyfile as your application, OR include from
+# the main Caddyfile via:
+#
+#   import /etc/caddy/snippets/doc-capture.caddy
+#
+# Replaces these placeholders before deploy:
+#   {EXTERNAL_HOST}   — public hostname (e.g. api.example.com)
+#   {INTERNAL_PORT}   — sidecar's loopback port (default 7444)
+#
+# Or invoke as a Caddy snippet:
+#
+#   (doc-capture-reverse-proxy) {
+#       reverse_proxy localhost:{args[0]}
+#   }
+#   api.example.com {
+#       handle_path /doc-capture/* {
+#           import doc-capture-reverse-proxy 7444
+#       }
+#   }
+
+{EXTERNAL_HOST} {
+    # Document-capture sidecar lives on loopback. Caddy terminates
+    # TLS and forwards to it. No PII reaches the Caddy access log
+    # — the sidecar enforces request-body privacy at its own
+    # layer, and Caddy's default access log doesn't capture bodies.
+    handle_path /doc-capture/* {
+        # Cap upload size at Caddy level too — defense in depth
+        # against malformed multipart that could OOM the sidecar.
+        # Slightly above the sidecar's 8 MiB per-image cap to allow
+        # for multipart envelope overhead + selfie + front + back.
+        request_body {
+            max_size 32MB
+        }
+        reverse_proxy 127.0.0.1:{INTERNAL_PORT} {
+            # Forward client info for rate-limit + audit on the
+            # sidecar side (when those features land). Sidecar
+            # ignores headers it doesn't recognize, so adding
+            # these now is forward-compatible.
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+
+            # Health probe should be inexpensive — short timeout
+            # so a wedged sidecar doesn't block Caddy worker
+            # threads.
+            health_uri /health
+            health_interval 30s
+            health_timeout 2s
+        }
+    }
+
+    # Strip the /doc-capture/ prefix the consumer uses publicly.
+    # Sidecar internally serves /health, /info, /capture at the
+    # root; the prefix is the consumer's namespacing concern.
+}
