@@ -195,6 +195,33 @@ async fn capture_with_corrupt_back_image_records_stage_error() {
         .any(|e| e.as_str().map(|s| s.contains("pdf417")).unwrap_or(false)));
 }
 
+/// Regression: an upload larger than axum's 2 MiB `DefaultBodyLimit`
+/// must NOT be rejected with 413. The capture route raises the limit
+/// to match the configured per-image cap; before that fix a >2 MiB
+/// body was rejected by the framework before the handler ran, making
+/// the documented 8 MiB image cap unreachable.
+#[tokio::test]
+async fn capture_accepts_upload_above_default_2mib_body_limit() {
+    let app = doc_capture_server::build_router();
+    // 3 MiB junk "front" image — past the 2 MiB framework default,
+    // well within the derived limit (3 × 8 MiB default cap).
+    let front = vec![0xABu8; 3 * 1024 * 1024];
+    let body = multipart_image_body(&[("front", front), ("template_id", b"test".to_vec())]);
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/capture")
+                .header("content-type", "multipart/form-data; boundary=BOUNDARY")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_ne!(res.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
 // ─── helpers ────────────────────────────────────────────────────
 
 /// Build a multipart body with only text fields. Boundary is fixed

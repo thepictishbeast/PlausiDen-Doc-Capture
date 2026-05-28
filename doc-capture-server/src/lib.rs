@@ -9,7 +9,7 @@ pub mod handlers;
 pub mod pipeline;
 pub mod state;
 
-use axum::{routing::get, routing::post, Router};
+use axum::{extract::DefaultBodyLimit, routing::get, routing::post, Router};
 
 pub use state::AppState;
 
@@ -28,9 +28,26 @@ pub fn build_router() -> Router {
 /// [`AppState::with_face_engine`] before binding the listener.
 /// Integration tests use this to inject pre-loaded Mock engines.
 pub fn build_router_with_state(state: state::AppState) -> Router {
+    // axum's `Multipart` extractor honors `DefaultBodyLimit`, whose
+    // framework default is 2 MiB. Without overriding it, any upload
+    // larger than 2 MiB total is rejected with 413 *before* the
+    // handler's per-file `max_image_bytes` check runs — making a
+    // configured cap above 2 MiB silently unreachable. Derive an
+    // explicit total-body limit from the per-image cap (front + back
+    // + selfie, plus headroom for text fields and multipart
+    // boundaries) so the configured cap is actually honored while
+    // still bounding total request memory.
+    let capture_body_limit = state
+        .config
+        .max_image_bytes
+        .saturating_mul(3)
+        .saturating_add(256 * 1024);
     Router::new()
         .route("/health", get(handlers::health))
         .route("/info", get(handlers::info))
-        .route("/capture", post(handlers::capture))
+        .route(
+            "/capture",
+            post(handlers::capture).layer(DefaultBodyLimit::max(capture_body_limit)),
+        )
         .with_state(state)
 }
