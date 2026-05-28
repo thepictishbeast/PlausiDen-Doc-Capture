@@ -151,9 +151,123 @@ fn sha256(bytes: &[u8]) -> [u8; 32] {
 /// built with `--features tesseract-cli`.
 #[cfg(feature = "tesseract-cli")]
 pub mod tesseract_cli {
-    use super::*;
+    use super::{Error, HashMap, OcrEngine, OcrLine, OcrResult, OcrSignals};
     use std::io::Write;
     use std::process::Command;
+
+    /// Parse Tesseract `tsv` output mode into an [`OcrResult`].
+    ///
+    /// Tesseract emits a 12-column, tab-separated table — one row per
+    /// layout element (page, block, paragraph, line, word). Word rows
+    /// carry `level == 5` and a `conf` column in `[0, 100]`; coarser
+    /// rows carry `conf == -1` and are skipped. Words are grouped into
+    /// lines by their `(block_num, par_num, line_num)` triple,
+    /// preserving the order Tesseract reports them.
+    ///
+    /// Per-line confidence is the mean of that line's word
+    /// confidences; the overall [`OcrSignals::text_confidence`] is the
+    /// mean across every word, each normalized from `[0, 100]` to
+    /// `[0.0, 1.0]`. With no recognized words the result is the
+    /// zero-signal "nothing recognized" outcome, matching
+    /// [`MockOcrEngine`]'s contract for unknown images.
+    ///
+    /// Orientation is not derivable from `tsv` output (it needs a
+    /// separate `--psm 0` OSD pass), so `detected_orientation` stays
+    /// `0` here.
+    fn parse_tsv(tsv: &str) -> OcrResult {
+        // Words accumulated per line, keyed by (block, par, line),
+        // kept in first-seen order so reading order is preserved.
+        let mut order: Vec<(u32, u32, u32)> = Vec::new();
+        let mut words: HashMap<(u32, u32, u32), Vec<(String, f32)>> = HashMap::new();
+
+        for row in tsv.lines() {
+            let cols: Vec<&str> = row.split('\t').collect();
+            // A valid word row has all 12 columns.
+            if cols.len() < 12 {
+                continue;
+            }
+            // Skip the header row (`level` etc.) and any non-word row.
+            if cols[0] != "5" {
+                continue;
+            }
+            let text = cols[11].trim();
+            if text.is_empty() {
+                continue;
+            }
+            let (Ok(block), Ok(par), Ok(line)) = (
+                cols[2].parse::<u32>(),
+                cols[3].parse::<u32>(),
+                cols[4].parse::<u32>(),
+            ) else {
+                continue;
+            };
+            let Ok(conf) = cols[10].parse::<f32>() else {
+                continue;
+            };
+            if conf < 0.0 {
+                continue;
+            }
+            let key = (block, par, line);
+            if !words.contains_key(&key) {
+                order.push(key);
+            }
+            words.entry(key).or_default().push((text.to_string(), conf));
+        }
+
+        let mut lines: Vec<OcrLine> = Vec::with_capacity(order.len());
+        let mut all_confs: Vec<f32> = Vec::new();
+        for key in &order {
+            let line_words = &words[key];
+            let line_text = line_words
+                .iter()
+                .map(|(w, _)| w.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let confs: Vec<f32> = line_words.iter().map(|(_, c)| *c).collect();
+            all_confs.extend(confs.iter().copied());
+            lines.push(OcrLine {
+                text: line_text,
+                confidence: mean(&confs) / 100.0,
+            });
+        }
+
+        let text = lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let required_fields_present = !text.trim().is_empty();
+        let text_confidence = if required_fields_present {
+            mean(&all_confs) / 100.0
+        } else {
+            0.0
+        };
+
+        OcrResult {
+            text,
+            signals: OcrSignals {
+                text_confidence,
+                required_fields_present,
+                detected_orientation: 0,
+            },
+            lines,
+        }
+    }
+
+    /// Arithmetic mean of a confidence slice. Empty slice yields `0.0`
+    /// so an all-skipped page reads as zero confidence rather than
+    /// dividing by zero.
+    fn mean(xs: &[f32]) -> f32 {
+        if xs.is_empty() {
+            return 0.0;
+        }
+        let sum: f32 = xs.iter().sum();
+        // Word counts per page are small (hundreds at most), so the
+        // usize->f32 widening is exact in practice.
+        #[allow(clippy::cast_precision_loss)]
+        let n = xs.len() as f32;
+        sum / n
+    }
 
     /// Tesseract CLI engine. Shells out to the `tesseract` binary
     /// per call.
@@ -164,6 +278,7 @@ pub mod tesseract_cli {
     impl TesseractCliEngine {
         /// Construct with the default `tesseract` binary (must be
         /// on PATH).
+        #[must_use]
         pub fn new() -> Self {
             Self {
                 binary_path: "tesseract".to_string(),
@@ -173,6 +288,7 @@ pub mod tesseract_cli {
         /// Construct with a specific binary path. Useful for
         /// containerized deployments that bundle their own
         /// tesseract build.
+        #[must_use]
         pub fn with_binary(path: impl Into<String>) -> Self {
             Self {
                 binary_path: path.into(),
@@ -202,14 +318,18 @@ pub mod tesseract_cli {
                     .map_err(|e| Error::OcrFailed(format!("tempfile sync: {e}")))?;
             }
 
-            // `tesseract <input_path> stdout -l <lang>` writes
-            // recognized text to stdout. Quiet, deterministic.
+            // `tesseract <input_path> stdout -l <lang> tsv` writes a
+            // tab-separated layout table to stdout, one row per
+            // recognized element, with a per-word confidence column.
+            // Quiet, deterministic, and richer than the plain text
+            // mode (which surfaces no confidence at all).
             let lang = if language.is_empty() { "eng" } else { language };
             let output = Command::new(&self.binary_path)
                 .arg(&img_path)
                 .arg("stdout")
                 .arg("-l")
                 .arg(lang)
+                .arg("tsv")
                 .output()
                 .map_err(|e| Error::OcrFailed(format!("tesseract spawn: {e}")))?;
 
@@ -222,29 +342,74 @@ pub mod tesseract_cli {
                 )));
             }
 
-            let text = String::from_utf8_lossy(&output.stdout).to_string();
-            let trimmed = text.trim();
-            let required_fields_present = !trimmed.is_empty();
-            // The plain `tesseract … stdout` mode doesn't surface
-            // confidence. Future iteration: switch to `tsv` mode
-            // and parse the per-word confidence. Default to 0.7
-            // when text is non-empty — placeholder until tsv mode
-            // is wired.
-            let text_confidence = if required_fields_present { 0.7 } else { 0.0 };
-
-            Ok(OcrResult {
-                text: trimmed.to_string(),
-                signals: OcrSignals {
-                    text_confidence,
-                    required_fields_present,
-                    detected_orientation: 0,
-                },
-                lines: vec![],
-            })
+            let tsv = String::from_utf8_lossy(&output.stdout);
+            Ok(parse_tsv(&tsv))
         }
 
         fn name(&self) -> &'static str {
             "tesseract-cli"
+        }
+    }
+
+    #[cfg(test)]
+    mod tsv_tests {
+        use super::parse_tsv;
+
+        const SAMPLE: &str = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n\
+1\t1\t0\t0\t0\t0\t0\t0\t600\t800\t-1\t\n\
+2\t1\t1\t0\t0\t0\t36\t40\t200\t30\t-1\t\n\
+3\t1\t1\t1\t0\t0\t36\t40\t200\t30\t-1\t\n\
+4\t1\t1\t1\t1\t0\t36\t40\t200\t30\t-1\t\n\
+5\t1\t1\t1\t1\t1\t36\t40\t60\t30\t95\tDOE\n\
+5\t1\t1\t1\t1\t2\t100\t40\t80\t30\t88\tJOHN\n\
+4\t1\t1\t1\t2\t0\t36\t80\t200\t30\t-1\t\n\
+5\t1\t1\t1\t2\t1\t36\t80\t160\t30\t72\t01/15/1985\n";
+
+        #[test]
+        fn parses_lines_and_confidence() {
+            let r = parse_tsv(SAMPLE);
+            assert_eq!(r.text, "DOE JOHN\n01/15/1985");
+            assert!(r.signals.required_fields_present);
+            assert_eq!(r.lines.len(), 2);
+            // line 1: mean(95, 88)/100 = 0.915
+            assert!((r.lines[0].confidence - 0.915).abs() < 1e-4);
+            // line 2: 72/100 = 0.72
+            assert!((r.lines[1].confidence - 0.72).abs() < 1e-4);
+            // overall: mean(95, 88, 72)/100 = 0.85
+            assert!((r.signals.text_confidence - 0.85).abs() < 1e-4);
+            assert_eq!(r.signals.detected_orientation, 0);
+        }
+
+        #[test]
+        fn no_words_is_zero_signal() {
+            let header_only = "level\tpage_num\tblock_num\tpar_num\tline_num\tword_num\tleft\ttop\twidth\theight\tconf\ttext\n\
+1\t1\t0\t0\t0\t0\t0\t0\t600\t800\t-1\t\n";
+            let r = parse_tsv(header_only);
+            assert_eq!(r.text, "");
+            assert!(!r.signals.required_fields_present);
+            assert!(r.signals.text_confidence.abs() < f32::EPSILON);
+            assert!(r.lines.is_empty());
+        }
+
+        #[test]
+        fn skips_negative_conf_and_blank_words() {
+            let tsv = "5\t1\t1\t1\t1\t1\t0\t0\t1\t1\t-1\tghost\n\
+5\t1\t1\t1\t1\t2\t0\t0\t1\t1\t90\t   \n\
+5\t1\t1\t1\t1\t3\t0\t0\t1\t1\t80\tREAL\n";
+            let r = parse_tsv(tsv);
+            assert_eq!(r.text, "REAL");
+            assert_eq!(r.lines.len(), 1);
+            assert!((r.signals.text_confidence - 0.80).abs() < 1e-4);
+        }
+
+        #[test]
+        fn groups_words_across_distinct_lines() {
+            let tsv = "5\t1\t1\t1\t1\t1\t0\t0\t1\t1\t100\tA\n\
+5\t1\t1\t1\t2\t1\t0\t0\t1\t1\t100\tB\n\
+5\t1\t2\t1\t1\t1\t0\t0\t1\t1\t100\tC\n";
+            let r = parse_tsv(tsv);
+            assert_eq!(r.lines.len(), 3);
+            assert_eq!(r.text, "A\nB\nC");
         }
     }
 }
