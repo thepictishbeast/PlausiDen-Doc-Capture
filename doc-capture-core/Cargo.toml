@@ -1,0 +1,17 @@
+[package]
+name = "doc-capture-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Typed core surface for Sacred.Vote document-capture: claims, attestations, errors."
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+hex.workspace = true
+uuid.workspace = true

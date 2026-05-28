@@ -1,0 +1,13 @@
+[package]
+name = "doc-capture-mrz"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "ICAO 9303 Machine Readable Zone (MRZ) parser + checksum verification for Sacred.Vote document-capture."
+
+[dependencies]
+doc-capture-core = { path = "../doc-capture-core" }
+thiserror.workspace = true
+serde.workspace = true

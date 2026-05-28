@@ -1,0 +1,47 @@
+# sacredvote-doc-capture — Rust sidecar for Sacred.Vote document-capture
+# identity verification.
+#
+# Workspace layout (rooted to grow as the pipeline gains modules):
+#   - doc-capture-core   typed surface: claims, attestations, errors
+#   - doc-capture-mrz    ICAO 9303 Machine Readable Zone parser + checksums
+#   - doc-capture-pdf417 PDF417 + AAMVA decoder for US driver licenses
+#   - doc-capture-ocr    Tesseract OCR adapter (feature-gated, optional)
+#   - doc-capture-tamper Error-Level Analysis tamper detection
+#   - doc-capture-server axum HTTP server, the binary that runs
+#
+# Per Sacred.Vote's `feedback_resource_conscious_hardening` doctrine the
+# heavier crates (Tesseract, face-match) are feature-gated so a minimal
+# build can ship without their native deps when only MRZ + PDF417 are
+# needed (e.g. for testing the pipeline shape without committing to the
+# full OCR stack).
+
+[workspace]
+members = [
+    "doc-capture-core",
+    "doc-capture-mrz",
+    # doc-capture-pdf417    — phase 1, AAMVA decoder
+    # doc-capture-tamper    — phase 4, Error-Level Analysis
+    # doc-capture-server    — phase 2, axum HTTP server
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+authors = ["William Armstrong <william@plausiden.com>"]
+repository = "https://github.com/thepictishbeast/sacredvote-doc-capture"
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+axum = { version = "0.7", features = ["multipart"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+sha2 = "0.10"
+hex = "0.4"
+uuid = { version = "1", features = ["v4", "serde"] }
