@@ -1,0 +1,18 @@
+# cargo-audit configuration for the document-capture workspace.
+#
+# Run `cargo audit --deny warnings` in CI; it must exit 0. Only
+# specific, justified advisory IDs are ignored below — never a blanket
+# category — so any *new* advisory (including a future real
+# vulnerability in an already-listed crate) still fails the gate.
+
+[advisories]
+ignore = [
+    # paste 1.0.15 — unmaintained (no vulnerability, no patch available).
+    # Proc-macro helper pulled in transitively via
+    # image/ravif/rav1e and rxing -> imageproc -> nalgebra -> simba.
+    # There is no upgrade path (the crate is simply no longer
+    # maintained), and it is build-time only. Ignoring this exact
+    # advisory ID keeps the supply-chain gate green; a future
+    # *vulnerability* in paste would carry a new ID and still fail.
+    "RUSTSEC-2024-0436",
+]
