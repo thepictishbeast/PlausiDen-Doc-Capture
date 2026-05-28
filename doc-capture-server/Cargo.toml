@@ -7,6 +7,15 @@ authors.workspace = true
 repository.workspace = true
 description = "axum HTTP server for PlausiDen-Doc-Capture. Exposes /health, /info, /capture endpoints wiring all pipeline stages."
 
+[features]
+# Default build wires the Mock OCR engine only — no native deps, so
+# workspace builds/tests run anywhere. Enable `tesseract-cli` to let
+# the binary select a real Tesseract-backed engine at runtime (see
+# `DOC_CAPTURE_OCR_ENGINE` in `main.rs`); it requires the `tesseract`
+# binary on PATH.
+default = []
+tesseract-cli = ["doc-capture-ocr/tesseract-cli"]
+
 [lib]
 name = "doc_capture_server"
 path = "src/lib.rs"
