@@ -4,10 +4,11 @@
 //! pipeline stage against it, composing the per-stage signals into a
 //! single [`Attestation`].
 //!
-//! Stages currently wired: MRZ (from supplied text — passport flow),
-//! PDF417+AAMVA (from back-image bytes — US DL flow). OCR, tamper,
-//! and face-match are stubs returning `None` signals until their
-//! respective phases ship.
+//! Stages wired: MRZ (caller-supplied text, or recovered from OCR of
+//! the front image — passport flow), PDF417+AAMVA (back-image bytes —
+//! US DL flow), OCR (front-image text + confidence), tamper (ELA), and
+//! face-match (selfie vs document portrait). Liveness (selfie
+//! anti-spoofing) is the one stage still unimplemented.
 
 use doc_capture_core::{hash_field, Attestation, DocumentClaims, Error, PipelineSignals};
 use doc_capture_face::FaceMatchEngine;
@@ -87,18 +88,7 @@ pub fn run(
         match doc_capture_mrz::parse_mrz(&line_refs) {
             Ok(mrz) => {
                 signals.mrz = Some(mrz.to_signals());
-                claims_from_mrz = Some(DocumentClaims {
-                    issuing_country: mrz.issuing_country.clone(),
-                    issuing_state: None,
-                    document_type: mrz.document_type.clone(),
-                    document_number: mrz.document_number.clone(),
-                    surname: mrz.surname.clone(),
-                    given_names: mrz.given_names.clone(),
-                    date_of_birth: yymmdd_to_iso(&mrz.date_of_birth_yymmdd),
-                    expiration_date: yymmdd_to_iso(&mrz.expiration_yymmdd),
-                    sex: mrz.sex.clone(),
-                    nationality: Some(mrz.nationality.clone()),
-                });
+                claims_from_mrz = Some(mrz_to_claims(&mrz));
             }
             Err(e) => {
                 stage_errors.push(format!("mrz: {e}"));
@@ -150,11 +140,30 @@ pub fn run(
         match ocr.recognize(&input.front_bytes, "eng") {
             Ok(ocr_result) => {
                 signals.ocr = Some(ocr_result.signals.clone());
-                // OCR text is not (yet) parsed into DocumentClaims
-                // here — that requires per-template field-extraction
-                // regexes which are phase 3.5. For now the OCR
-                // signal indicates whether text was extractable;
-                // claims still come from MRZ / AAMVA.
+                // OCR-derived MRZ fallback: when the caller did NOT
+                // supply machine-read MRZ lines (claims_from_mrz is
+                // still None) but the OCR'd front contains an ICAO
+                // MRZ block (passport / TD1-TD3 card photographed
+                // whole), recover it from the OCR text. The MRZ check
+                // digits are the integrity gate — an OCR misread
+                // breaks a checksum, so we only accept the claims
+                // when EVERY checksum validates. Garbage OCR thus
+                // self-rejects and never yields false claims.
+                //
+                // General per-template field extraction (labeled
+                // fields without an MRZ) is still future work.
+                if claims_from_mrz.is_none() {
+                    if let Some(lines) = extract_mrz_candidate_lines(&ocr_result.text) {
+                        let line_refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+                        if let Ok(mrz) = doc_capture_mrz::parse_mrz(&line_refs) {
+                            let sig = mrz.to_signals();
+                            if sig.all_checksums_valid {
+                                claims_from_mrz = Some(mrz_to_claims(&mrz));
+                                signals.mrz = Some(sig);
+                            }
+                        }
+                    }
+                }
             }
             Err(e) => {
                 stage_errors.push(format!("ocr: {e}"));
@@ -230,6 +239,119 @@ pub fn run(
         signals,
         stage_errors,
     }
+}
+
+/// Map a parsed MRZ into the pipeline's [`DocumentClaims`] shape.
+///
+/// Shared by the explicit-MRZ path (caller-supplied lines) and the
+/// OCR-derived MRZ fallback so both produce identical claim
+/// structures.
+fn mrz_to_claims(mrz: &doc_capture_mrz::ParsedMrz) -> DocumentClaims {
+    DocumentClaims {
+        issuing_country: mrz.issuing_country.clone(),
+        issuing_state: None,
+        document_type: mrz.document_type.clone(),
+        document_number: mrz.document_number.clone(),
+        surname: mrz.surname.clone(),
+        given_names: mrz.given_names.clone(),
+        date_of_birth: yymmdd_to_iso(&mrz.date_of_birth_yymmdd),
+        expiration_date: yymmdd_to_iso(&mrz.expiration_yymmdd),
+        sex: mrz.sex.clone(),
+        nationality: Some(mrz.nationality.clone()),
+    }
+}
+
+/// Find an ICAO MRZ block inside free-form OCR text.
+///
+/// MRZ lines use a restricted alphabet (`A-Z`, `0-9`, and the filler
+/// `<`) and pack data into fixed widths: TD3 passports are two
+/// 44-char lines, TD2 cards two 36-char lines, TD1 cards three
+/// 30-char lines. The human-readable text printed elsewhere on the
+/// document mixes case, includes spaces, and rarely contains `<`, so
+/// requiring the filler character cleanly discriminates MRZ rows from
+/// the rest of the page.
+///
+/// Returns the longest run of consecutive MRZ-looking rows (2 or 3),
+/// each normalized to the nearest standard width via
+/// [`normalize_mrz_line`], or `None` when no such run exists. This
+/// only narrows the haystack — `parse_mrz`'s check-digit validation
+/// is the real integrity gate, applied by the caller.
+fn extract_mrz_candidate_lines(ocr_text: &str) -> Option<Vec<String>> {
+    let is_candidate = |raw: &str| -> Option<String> {
+        let compact: String = raw
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>();
+        let compact = compact.to_uppercase();
+        let len = compact.len();
+        if (20..=50).contains(&len)
+            && compact.contains('<')
+            && compact
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '<')
+        {
+            Some(compact)
+        } else {
+            None
+        }
+    };
+
+    // Longest maximal run of consecutive candidate rows.
+    let mut best: Vec<String> = Vec::new();
+    let mut current: Vec<String> = Vec::new();
+    for line in ocr_text.lines() {
+        if let Some(c) = is_candidate(line) {
+            current.push(c);
+        } else if current.len() > best.len() {
+            best = std::mem::take(&mut current);
+        } else {
+            current.clear();
+        }
+    }
+    if current.len() > best.len() {
+        best = current;
+    }
+
+    match best.len() {
+        // A 3-row run is a TD1 card (30-char lines).
+        n if n >= 3 => Some(
+            best.iter()
+                .take(3)
+                .map(|l| normalize_mrz_line(l, 30))
+                .collect(),
+        ),
+        // A 2-row run is TD3 (44) when the rows are long, else TD2 (36).
+        2 => {
+            let width = if best.iter().map(String::len).max().unwrap_or(0) >= 40 {
+                44
+            } else {
+                36
+            };
+            Some(best.iter().map(|l| normalize_mrz_line(l, width)).collect())
+        }
+        _ => None,
+    }
+}
+
+/// Normalize an OCR'd MRZ row to an exact standard width: drop any
+/// characters outside the MRZ alphabet, pad short rows with the filler
+/// `<`, and truncate over-long rows. `parse_mrz` requires exact
+/// 30/36/44-char lines, so minor OCR length drift would otherwise
+/// hard-fail the parse before the check digits even run. A genuine
+/// misread still breaks a check digit and is rejected downstream.
+fn normalize_mrz_line(line: &str, width: usize) -> String {
+    let mut s: String = line
+        .chars()
+        .filter(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == '<')
+        .collect();
+    if s.len() > width {
+        s.truncate(width);
+    } else {
+        while s.len() < width {
+            s.push('<');
+        }
+    }
+    s
 }
 
 /// Convert ICAO `YYMMDD` to ISO `YYYY-MM-DD`. ICAO doesn't carry a
@@ -370,8 +492,103 @@ mod tests {
         Arc::new(doc_capture_ocr::MockOcrEngine::new())
     }
 
+    // OCR engine that returns fixed text for the given front bytes,
+    // for exercising the OCR-derived MRZ fallback.
+    fn ocr_with_text(front: &[u8], text: &str) -> Arc<dyn OcrEngine> {
+        let res = doc_capture_ocr::OcrResult {
+            text: text.to_string(),
+            signals: doc_capture_core::OcrSignals {
+                text_confidence: 0.9,
+                required_fields_present: true,
+                detected_orientation: 0,
+            },
+            lines: vec![],
+        };
+        Arc::new(doc_capture_ocr::MockOcrEngine::new().with_fixture(front, res))
+    }
+
     fn mock_face() -> Arc<dyn FaceMatchEngine> {
         Arc::new(doc_capture_face::MockFaceMatchEngine::new())
+    }
+
+    // Valid ICAO TD3 (ERIKSSON) example — all check digits pass.
+    const ERIKSSON_L1: &str = "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<";
+    const ERIKSSON_L2: &str = "L898902C36UTO7408122F1204159ZE184226B<<<<<10";
+
+    #[test]
+    fn extract_mrz_finds_td3_block() {
+        let text =
+            format!("REPUBLIC OF UTOPIA\nPASSPORT\n{ERIKSSON_L1}\n{ERIKSSON_L2}\nsigned here");
+        let lines = extract_mrz_candidate_lines(&text).expect("MRZ block present");
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].len(), 44);
+        assert_eq!(lines[1].len(), 44);
+    }
+
+    #[test]
+    fn extract_mrz_none_when_absent() {
+        assert!(extract_mrz_candidate_lines("just some\nplain text\nno mrz here").is_none());
+    }
+
+    #[test]
+    fn normalize_mrz_pads_and_truncates() {
+        assert_eq!(normalize_mrz_line("ABC", 6), "ABC<<<");
+        assert_eq!(normalize_mrz_line("ABCDEFGH", 4), "ABCD");
+        // Stray characters (lowercase, punctuation, spaces) are
+        // dropped — callers uppercase before normalizing.
+        assert_eq!(normalize_mrz_line("A b!C", 5), "AC<<<");
+    }
+
+    #[test]
+    fn ocr_derived_mrz_yields_claims() {
+        let front = b"passport-front-photo" as &[u8];
+        let text = format!("REPUBLIC OF UTOPIA\nPASSPORT\n{ERIKSSON_L1}\n{ERIKSSON_L2}\n");
+        let out = run(
+            &CaptureInput {
+                front_bytes: front.to_vec(),
+                back_bytes: vec![],
+                selfie_bytes: vec![],
+                template_id: "icao-passport-v1".to_string(),
+                mrz_lines: vec![],
+                salt: b"s".to_vec(),
+            },
+            &ocr_with_text(front, &text),
+            &mock_face(),
+        );
+        let claims = out.claims.expect("OCR-derived MRZ should produce claims");
+        assert_eq!(claims.surname, "ERIKSSON");
+        assert_eq!(claims.given_names, "ANNA MARIA");
+        assert!(
+            out.signals
+                .mrz
+                .expect("mrz signals present")
+                .all_checksums_valid
+        );
+    }
+
+    #[test]
+    fn ocr_derived_mrz_rejected_on_bad_checksum() {
+        let front = b"corrupt-passport" as &[u8];
+        // DOB digits zeroed but the original DOB check digit kept, so
+        // the DOB (and composite) check digits no longer match.
+        let bad_l2 = "L898902C36UTO0000002F1204159ZE184226B<<<<<10";
+        let text = format!("PASSPORT\n{ERIKSSON_L1}\n{bad_l2}\n");
+        let out = run(
+            &CaptureInput {
+                front_bytes: front.to_vec(),
+                back_bytes: vec![],
+                selfie_bytes: vec![],
+                template_id: "icao-passport-v1".to_string(),
+                mrz_lines: vec![],
+                salt: b"s".to_vec(),
+            },
+            &ocr_with_text(front, &text),
+            &mock_face(),
+        );
+        assert!(
+            out.claims.is_none(),
+            "OCR MRZ with a failed checksum must not yield claims"
+        );
     }
 
     #[test]
