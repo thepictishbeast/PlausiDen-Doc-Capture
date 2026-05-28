@@ -152,9 +152,27 @@ pub fn run(input: CaptureInput, ocr: &Arc<dyn OcrEngine>) -> CaptureOutput {
         }
     }
 
-    // tamper / face — phases 4/5 — currently unfilled. The signals
-    // stay None to make it explicit that those stages did NOT run,
-    // which is distinct from "ran and returned negative."
+    // ── Tamper stage (phase 4) ───────────────────────────────────
+    //
+    // Runs ELA on whichever image bytes we have — front preferred,
+    // back if front is absent. Only one analysis is needed per
+    // capture; ELA on the document front catches the same class of
+    // edits that ELA on the back catches.
+    let tamper_target = if !input.front_bytes.is_empty() {
+        Some(input.front_bytes.as_slice())
+    } else if !input.back_bytes.is_empty() {
+        Some(input.back_bytes.as_slice())
+    } else {
+        None
+    };
+    if let Some(bytes) = tamper_target {
+        match doc_capture_tamper::analyze_ela(bytes) {
+            Ok(t) => signals.tamper = Some(t),
+            Err(e) => stage_errors.push(format!("tamper: {e}")),
+        }
+    }
+
+    // face — phase 5 — currently unfilled.
     let _ = input.selfie_bytes;
     let _ = input.template_id;
 

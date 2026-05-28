@@ -24,9 +24,11 @@ members = [
     "doc-capture-pdf417",
     "doc-capture-server",
     "doc-capture-ocr",
+    "doc-capture-tamper",
     # phase 1b ↑↑ PDF417 binary decoder (rxing-wrapped)
     # phase 2  ↑↑ axum HTTP server
     # phase 3  ↑↑ OCR adapter (trait + Mock; Tesseract CLI feature-gated)
+    # phase 4  ↑↑ tamper detection (Error-Level Analysis)
     # doc-capture-tamper    — phase 4, Error-Level Analysis
     # doc-capture-server    — phase 2, axum HTTP server
 ]
