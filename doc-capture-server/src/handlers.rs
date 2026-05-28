@@ -110,7 +110,7 @@ pub async fn capture(
         mrz_lines: form.mrz_lines,
         salt: form.salt,
     };
-    let out = pipeline::run(input, &state.ocr);
+    let out = pipeline::run(input, &state.ocr, &state.face);
 
     // Cache the per-stage signals against the session id so
     // GET /session/{id} (phase 2.5) can return them later.

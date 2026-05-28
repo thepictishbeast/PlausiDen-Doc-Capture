@@ -1,0 +1,29 @@
+[package]
+name = "doc-capture-face"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Face match + liveness adapter for PlausiDen-Doc-Capture. Trait surface + a Mock engine for testing; real ONNX-based engines plug in via feature flag."
+
+[features]
+# Default build is engine-free: only the trait + Mock engine. Mirrors
+# the doc-capture-ocr crate pattern so workspace builds and tests run
+# without native deps. Production deployments enable an engine
+# feature flag.
+default = []
+# Reserved feature names for future real engines. The implementations
+# are not in this commit (phase 5 lands the trait + Mock); these
+# names exist so consumers can pin Cargo.toml entries today and add
+# the engine later without API churn.
+insightface-onnx = []
+dlib-rs = []
+
+[dependencies]
+doc-capture-core = { path = "../doc-capture-core" }
+thiserror.workspace = true
+serde.workspace = true
+tracing.workspace = true
+sha2.workspace = true
+hex.workspace = true

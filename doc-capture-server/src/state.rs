@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use doc_capture_face::{FaceMatchEngine, MockFaceMatchEngine};
 use doc_capture_ocr::{MockOcrEngine, OcrEngine};
 
 /// Configuration knobs sourced from environment variables at boot.
@@ -72,16 +73,23 @@ pub struct AppState {
     /// missing OCR signal and proceeds). Production deployments
     /// swap in a real engine via [`AppState::with_ocr_engine`].
     pub ocr: Arc<dyn OcrEngine>,
+    /// Face-match + liveness engine. Defaults to
+    /// [`MockFaceMatchEngine`] which returns no-match for any
+    /// unknown image pair. Production deployments swap in a real
+    /// engine via [`AppState::with_face_engine`].
+    pub face: Arc<dyn FaceMatchEngine>,
 }
 
 impl AppState {
-    /// Construct a fresh AppState with the [`MockOcrEngine`] as
-    /// the OCR backend. Reads env vars for configuration.
+    /// Construct a fresh AppState with the [`MockOcrEngine`] and
+    /// [`MockFaceMatchEngine`] as the default engine backends.
+    /// Reads env vars for configuration.
     pub fn new() -> Self {
         Self {
             config: Arc::new(Config::default()),
             sessions: Arc::new(Mutex::new(SessionStore::default())),
             ocr: Arc::new(MockOcrEngine::new()),
+            face: Arc::new(MockFaceMatchEngine::new()),
         }
     }
 
@@ -90,6 +98,13 @@ impl AppState {
     /// implementation in production.
     pub fn with_ocr_engine(mut self, engine: Arc<dyn OcrEngine>) -> Self {
         self.ocr = engine;
+        self
+    }
+
+    /// Override the face-match engine. Use to plug in a real ONNX
+    /// or dlib-backed engine in production.
+    pub fn with_face_engine(mut self, engine: Arc<dyn FaceMatchEngine>) -> Self {
+        self.face = engine;
         self
     }
 }

@@ -12,8 +12,15 @@
 use doc_capture_core::{
     hash_field, Attestation, DocumentClaims, Error, PipelineSignals,
 };
+use doc_capture_face::FaceMatchEngine;
 use doc_capture_ocr::OcrEngine;
 use std::sync::Arc;
+
+/// Default cosine-distance threshold for face-match. Mirrors
+/// `FaceMatchSignals::threshold` semantics; engines that need a
+/// different threshold per deployment override via the caller's
+/// pipeline policy (not yet a config knob; future iter).
+pub const DEFAULT_FACE_THRESHOLD: f32 = 0.5;
 
 /// All inputs the /capture handler hands to the orchestrator.
 pub struct CaptureInput {
@@ -64,7 +71,11 @@ pub struct CaptureOutput {
 /// `ocr` is the engine injected by the server. Tests can pass a
 /// Mock with pre-loaded fixtures; production deployments pass a
 /// real engine like `TesseractCliEngine`.
-pub fn run(input: CaptureInput, ocr: &Arc<dyn OcrEngine>) -> CaptureOutput {
+pub fn run(
+    input: CaptureInput,
+    ocr: &Arc<dyn OcrEngine>,
+    face: &Arc<dyn FaceMatchEngine>,
+) -> CaptureOutput {
     let session_id = uuid::Uuid::new_v4().to_string();
     let mut signals = PipelineSignals::default();
     let mut stage_errors: Vec<String> = Vec::new();
@@ -172,8 +183,25 @@ pub fn run(input: CaptureInput, ocr: &Arc<dyn OcrEngine>) -> CaptureOutput {
         }
     }
 
-    // face — phase 5 — currently unfilled.
-    let _ = input.selfie_bytes;
+    // ── Face match + liveness stage (phase 5) ────────────────────
+    //
+    // Runs only when BOTH selfie_bytes and a portrait source are
+    // supplied. The "portrait source" today is the front-of-doc
+    // image (the front-image crop is done upstream — the engine
+    // gets the full image and is expected to locate the face).
+    // When face crop extraction becomes a discrete pipeline step
+    // (phase 5.5) this passes a tighter region instead.
+    if !input.selfie_bytes.is_empty() && !input.front_bytes.is_empty() {
+        match face.match_faces(
+            &input.selfie_bytes,
+            &input.front_bytes,
+            DEFAULT_FACE_THRESHOLD,
+        ) {
+            Ok(sig) => signals.face_match = Some(sig),
+            Err(e) => stage_errors.push(format!("face: {e}")),
+        }
+    }
+
     let _ = input.template_id;
 
     // Cross-validator: if both MRZ and AAMVA produced claims, the
@@ -346,6 +374,10 @@ mod tests {
         Arc::new(doc_capture_ocr::MockOcrEngine::new())
     }
 
+    fn mock_face() -> Arc<dyn FaceMatchEngine> {
+        Arc::new(doc_capture_face::MockFaceMatchEngine::new())
+    }
+
     #[test]
     fn empty_input_yields_empty_output() {
         let out = run(CaptureInput {
@@ -355,7 +387,7 @@ mod tests {
             template_id: "test".to_string(),
             mrz_lines: vec![],
             salt: b"test-salt".to_vec(),
-        }, &mock_ocr());
+        }, &mock_ocr(), &mock_face());
         assert!(out.claims.is_none());
         assert!(out.attestation.is_none());
         assert!(out.signals.mrz.is_none());
@@ -376,7 +408,7 @@ mod tests {
             template_id: "icao-passport-v1".to_string(),
             mrz_lines: vec![l1, l2],
             salt: b"test-salt".to_vec(),
-        }, &mock_ocr());
+        }, &mock_ocr(), &mock_face());
         let claims = out.claims.expect("MRZ should produce claims");
         assert_eq!(claims.surname, "ERIKSSON");
         assert_eq!(claims.given_names, "ANNA MARIA");
@@ -398,7 +430,7 @@ mod tests {
             template_id: "test".to_string(),
             mrz_lines: vec!["only one line".to_string()],
             salt: vec![],
-        }, &mock_ocr());
+        }, &mock_ocr(), &mock_face());
         assert!(out.claims.is_none());
         assert!(out.stage_errors.iter().any(|e| e.starts_with("mrz:")));
     }
@@ -412,7 +444,7 @@ mod tests {
             template_id: "us-dl".to_string(),
             mrz_lines: vec![],
             salt: vec![],
-        }, &mock_ocr());
+        }, &mock_ocr(), &mock_face());
         assert!(out.claims.is_none());
         assert!(out
             .stage_errors
