@@ -20,6 +20,7 @@ doc-capture-core = { path = "../doc-capture-core" }
 doc-capture-mrz = { path = "../doc-capture-mrz" }
 doc-capture-aamva = { path = "../doc-capture-aamva" }
 doc-capture-pdf417 = { path = "../doc-capture-pdf417" }
+doc-capture-ocr = { path = "../doc-capture-ocr" }
 
 anyhow.workspace = true
 thiserror.workspace = true

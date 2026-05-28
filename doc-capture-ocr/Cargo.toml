@@ -1,0 +1,31 @@
+[package]
+name = "doc-capture-ocr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "OCR adapter for PlausiDen-Doc-Capture. Trait surface + a Mock engine for testing + a feature-gated Tesseract CLI adapter for production."
+
+[features]
+# Default build is engine-free: only the trait + Mock engine. Workspace
+# builds and tests run without any native deps. Consumers pick an
+# engine at consumer-crate compile time.
+default = []
+# Tesseract via the `tesseract` CLI binary shelled out per request.
+# Requires `tesseract` to be on PATH at runtime. No native FFI; trades
+# per-call subprocess overhead for installation simplicity. Adequate
+# for low-volume use cases (a few captures per minute). Pulls in the
+# `tempfile` dep transitively.
+tesseract-cli = ["tempfile"]
+
+[dependencies]
+doc-capture-core = { path = "../doc-capture-core" }
+thiserror.workspace = true
+serde.workspace = true
+tracing.workspace = true
+sha2.workspace = true
+hex.workspace = true
+# Tempfile is needed for the CLI adapter when the feature is on.
+# `optional = true` keeps it out of the default-build dep graph.
+tempfile = { version = "3", optional = true }

@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use doc_capture_ocr::{MockOcrEngine, OcrEngine};
+
 /// Configuration knobs sourced from environment variables at boot.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -65,14 +67,29 @@ pub struct AppState {
     /// Capture-session store. Mutex-guarded; the contention window
     /// is tiny (insert one session record per /capture call).
     pub sessions: Arc<Mutex<SessionStore>>,
+    /// OCR engine. Defaults to [`MockOcrEngine`] which returns
+    /// no-recognition for any image (the pipeline records the
+    /// missing OCR signal and proceeds). Production deployments
+    /// swap in a real engine via [`AppState::with_ocr_engine`].
+    pub ocr: Arc<dyn OcrEngine>,
 }
 
 impl AppState {
-    /// Construct a fresh AppState. Reads env vars for configuration.
+    /// Construct a fresh AppState with the [`MockOcrEngine`] as
+    /// the OCR backend. Reads env vars for configuration.
     pub fn new() -> Self {
         Self {
             config: Arc::new(Config::default()),
             sessions: Arc::new(Mutex::new(SessionStore::default())),
+            ocr: Arc::new(MockOcrEngine::new()),
         }
+    }
+
+    /// Override the OCR engine. Use to plug in
+    /// `TesseractCliEngine` or any other [`OcrEngine`]
+    /// implementation in production.
+    pub fn with_ocr_engine(mut self, engine: Arc<dyn OcrEngine>) -> Self {
+        self.ocr = engine;
+        self
     }
 }

@@ -12,6 +12,8 @@
 use doc_capture_core::{
     hash_field, Attestation, DocumentClaims, Error, PipelineSignals,
 };
+use doc_capture_ocr::OcrEngine;
+use std::sync::Arc;
 
 /// All inputs the /capture handler hands to the orchestrator.
 pub struct CaptureInput {
@@ -58,7 +60,11 @@ pub struct CaptureOutput {
 /// The orchestrator does NOT itself decide if a capture is
 /// "verified" — that policy is the consumer's. The consumer reads
 /// the signals and applies thresholds based on its trust posture.
-pub fn run(input: CaptureInput) -> CaptureOutput {
+///
+/// `ocr` is the engine injected by the server. Tests can pass a
+/// Mock with pre-loaded fixtures; production deployments pass a
+/// real engine like `TesseractCliEngine`.
+pub fn run(input: CaptureInput, ocr: &Arc<dyn OcrEngine>) -> CaptureOutput {
     let session_id = uuid::Uuid::new_v4().to_string();
     let mut signals = PipelineSignals::default();
     let mut stage_errors: Vec<String> = Vec::new();
@@ -124,10 +130,31 @@ pub fn run(input: CaptureInput) -> CaptureOutput {
         }
     }
 
-    // OCR / tamper / face — phases 3/4/5 — currently unfilled. The
-    // signals stay None to make it explicit that those stages did
-    // NOT run, which is distinct from "ran and returned negative."
-    let _ = input.front_bytes;
+    // ── OCR stage (phase 3) ──────────────────────────────────────
+    //
+    // Runs only when the caller supplied front_bytes. The engine
+    // is injected by the server; tests pass a MockOcrEngine with
+    // pre-loaded fixtures, production passes TesseractCliEngine
+    // (or other future impl).
+    if !input.front_bytes.is_empty() {
+        match ocr.recognize(&input.front_bytes, "eng") {
+            Ok(ocr_result) => {
+                signals.ocr = Some(ocr_result.signals.clone());
+                // OCR text is not (yet) parsed into DocumentClaims
+                // here — that requires per-template field-extraction
+                // regexes which are phase 3.5. For now the OCR
+                // signal indicates whether text was extractable;
+                // claims still come from MRZ / AAMVA.
+            }
+            Err(e) => {
+                stage_errors.push(format!("ocr: {e}"));
+            }
+        }
+    }
+
+    // tamper / face — phases 4/5 — currently unfilled. The signals
+    // stay None to make it explicit that those stages did NOT run,
+    // which is distinct from "ran and returned negative."
     let _ = input.selfie_bytes;
     let _ = input.template_id;
 
@@ -297,6 +324,10 @@ mod tests {
         assert_eq!(age_over("not-a-date", 18), None);
     }
 
+    fn mock_ocr() -> Arc<dyn OcrEngine> {
+        Arc::new(doc_capture_ocr::MockOcrEngine::new())
+    }
+
     #[test]
     fn empty_input_yields_empty_output() {
         let out = run(CaptureInput {
@@ -306,7 +337,7 @@ mod tests {
             template_id: "test".to_string(),
             mrz_lines: vec![],
             salt: b"test-salt".to_vec(),
-        });
+        }, &mock_ocr());
         assert!(out.claims.is_none());
         assert!(out.attestation.is_none());
         assert!(out.signals.mrz.is_none());
@@ -327,7 +358,7 @@ mod tests {
             template_id: "icao-passport-v1".to_string(),
             mrz_lines: vec![l1, l2],
             salt: b"test-salt".to_vec(),
-        });
+        }, &mock_ocr());
         let claims = out.claims.expect("MRZ should produce claims");
         assert_eq!(claims.surname, "ERIKSSON");
         assert_eq!(claims.given_names, "ANNA MARIA");
@@ -349,7 +380,7 @@ mod tests {
             template_id: "test".to_string(),
             mrz_lines: vec!["only one line".to_string()],
             salt: vec![],
-        });
+        }, &mock_ocr());
         assert!(out.claims.is_none());
         assert!(out.stage_errors.iter().any(|e| e.starts_with("mrz:")));
     }
@@ -363,7 +394,7 @@ mod tests {
             template_id: "us-dl".to_string(),
             mrz_lines: vec![],
             salt: vec![],
-        });
+        }, &mock_ocr());
         assert!(out.claims.is_none());
         assert!(out
             .stage_errors
