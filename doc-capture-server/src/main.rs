@@ -1,7 +1,7 @@
 //! `doc-capture-server` binary entry point.
 //!
 //! Library types live in `lib.rs`; this file is just the runtime
-//! launcher (CLI args via env vars, tracing init, axum::serve).
+//! launcher (CLI args via env vars, tracing init, `axum::serve`).
 //!
 //! ## Environment
 //!
@@ -12,6 +12,10 @@
 //!   (default 8 MiB).
 //! - `DOC_CAPTURE_LOG_LEVEL` — tracing-subscriber env-filter
 //!   (default `info`).
+
+#![forbid(unsafe_code)]
+#![deny(missing_docs)]
+#![warn(clippy::all, clippy::pedantic)]
 
 use anyhow::Result;
 use std::net::SocketAddr;
@@ -35,7 +39,10 @@ async fn main() -> Result<()> {
 
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
-    let filter = EnvFilter::try_from_env("DOC_CAPTURE_LOG_LEVEL")
-        .unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt().json().with_env_filter(filter).init();
+    let filter =
+        EnvFilter::try_from_env("DOC_CAPTURE_LOG_LEVEL").unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt()
+        .json()
+        .with_env_filter(filter)
+        .init();
 }

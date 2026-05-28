@@ -26,14 +26,16 @@
 //!
 //! ## Why pure Rust
 //!
-//! No native deps (Tesseract, OpenCV, ImageMagick). The `image`
+//! No native deps (Tesseract, `OpenCV`, `ImageMagick`). The `image`
 //! crate has pure-Rust JPEG + PNG codecs which are slow but
 //! deterministic and trivially portable. For the volume a
 //! per-capture sidecar handles (10s-100s/min, not 1000s), this is
 //! adequate. If throughput becomes an issue, swap in `mozjpeg-sys`
 //! behind a feature gate.
 
+#![forbid(unsafe_code)]
 #![deny(missing_docs)]
+#![warn(clippy::all, clippy::pedantic)]
 
 use doc_capture_core::{Error, TamperSignals};
 use image::{ImageEncoder, ImageReader};
@@ -55,7 +57,8 @@ pub const DEFAULT_SUSPICIOUS_THRESHOLD: f32 = 0.05;
 /// with `ela_score` in `[0.0, ~0.3]` and `suspicious` set per the
 /// default threshold.
 ///
-/// Errors:
+/// # Errors
+///
 /// - [`Error::InvalidImage`] if the bytes don't decode as an image.
 /// - [`Error::Upstream`] if re-encode + re-decode fails (rare;
 ///   shouldn't happen on bytes that already decoded once).
@@ -71,6 +74,13 @@ pub fn analyze_ela(bytes: &[u8]) -> Result<TamperSignals, Error> {
 /// threshold. Most callers want [`analyze_ela`]; this exists for
 /// testing different operating points + for consumers with a
 /// non-default threshold policy.
+///
+/// # Errors
+///
+/// - [`Error::InvalidImage`] if the bytes don't decode as an image.
+/// - [`Error::Upstream`] if the re-encode + re-decode roundtrip fails
+///   or the dimensions diverge from the original.
+#[allow(clippy::cast_precision_loss)] // averaging an L-infinity distance into an f32 score; sub-ulp error is irrelevant
 pub fn analyze_ela_with(
     bytes: &[u8],
     reencode_quality: u8,
@@ -87,10 +97,8 @@ pub fn analyze_ela_with(
     // Re-encode as JPEG.
     let mut reencoded: Vec<u8> = Vec::new();
     {
-        let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
-            &mut reencoded,
-            reencode_quality,
-        );
+        let encoder =
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut reencoded, reencode_quality);
         encoder
             .write_image(
                 img.as_raw(),
@@ -125,11 +133,11 @@ pub fn analyze_ela_with(
     let mut sum_distance: u64 = 0;
     let mut max_distance: u8 = 0;
     for i in 0..pixel_count {
-        let r = (orig[i * 3] as i16 - re[i * 3] as i16).unsigned_abs() as u8;
-        let g = (orig[i * 3 + 1] as i16 - re[i * 3 + 1] as i16).unsigned_abs() as u8;
-        let b = (orig[i * 3 + 2] as i16 - re[i * 3 + 2] as i16).unsigned_abs() as u8;
+        let r = orig[i * 3].abs_diff(re[i * 3]);
+        let g = orig[i * 3 + 1].abs_diff(re[i * 3 + 1]);
+        let b = orig[i * 3 + 2].abs_diff(re[i * 3 + 2]);
         let d = r.max(g).max(b);
-        sum_distance += d as u64;
+        sum_distance += u64::from(d);
         if d > max_distance {
             max_distance = d;
         }
@@ -155,7 +163,7 @@ mod tests {
     use super::*;
     use image::{ImageBuffer, Rgb};
 
-    /// Encode an RgbImage to JPEG bytes at the given quality.
+    /// Encode an `RgbImage` to JPEG bytes at the given quality.
     fn rgb_to_jpeg(img: &ImageBuffer<Rgb<u8>, Vec<u8>>, quality: u8) -> Vec<u8> {
         let mut out = Vec::new();
         let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, quality);
@@ -176,13 +184,10 @@ mod tests {
     }
 
     /// Make a 64x64 gradient image (smooth, low-frequency).
+    #[allow(clippy::cast_possible_truncation)] // x,y < 64 so the scaled channels stay within u8
     fn gradient_image() -> ImageBuffer<Rgb<u8>, Vec<u8>> {
         ImageBuffer::from_fn(64, 64, |x, y| {
-            Rgb([
-                (x * 4) as u8,
-                (y * 4) as u8,
-                ((x + y) * 2) as u8,
-            ])
+            Rgb([(x * 4) as u8, (y * 4) as u8, ((x + y) * 2) as u8])
         })
     }
 
@@ -255,7 +260,7 @@ mod tests {
         assert!(!lenient.suspicious, "lenient threshold should pass");
         assert!(strict.suspicious, "strict threshold should flag");
         // Score itself is independent of threshold.
-        assert_eq!(lenient.ela_score, strict.ela_score);
+        assert!((lenient.ela_score - strict.ela_score).abs() < f32::EPSILON);
     }
 
     #[test]

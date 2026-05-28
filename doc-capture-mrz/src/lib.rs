@@ -24,7 +24,9 @@
 //! preprocessing, OCR, and orchestrating the parse into the pipeline
 //! signals live in sibling crates.
 
+#![forbid(unsafe_code)]
 #![deny(missing_docs)]
+#![warn(clippy::all, clippy::pedantic)]
 
 use doc_capture_core::{Error, MrzSignals};
 use std::collections::BTreeMap;
@@ -38,14 +40,16 @@ use std::collections::BTreeMap;
 /// The function is `pub` because external tests (the workspace test
 /// suite + the ICAO 9303 reference vectors) exercise it independent
 /// of full-MRZ parsing.
+#[must_use]
 pub fn mrz_check_digit(s: &str) -> u8 {
     const WEIGHTS: [u8; 3] = [7, 3, 1];
     let mut sum: u32 = 0;
     for (i, c) in s.chars().enumerate() {
-        let v = mrz_char_value(c) as u32;
-        sum += v * WEIGHTS[i % 3] as u32;
+        let v = u32::from(mrz_char_value(c));
+        sum += v * u32::from(WEIGHTS[i % 3]);
     }
-    (sum % 10) as u8
+    // `sum % 10` is always in 0..=9, so the narrowing is total.
+    u8::try_from(sum % 10).unwrap_or(0)
 }
 
 /// Map a single MRZ character to its numeric value for check-digit
@@ -54,12 +58,26 @@ pub fn mrz_check_digit(s: &str) -> u8 {
 /// `0-9` → 0-9. `A-Z` → 10-35. `<` (filler) → 0.
 /// Any other character is treated as 0 (lenient parse; the caller
 /// catches non-conforming MRZ via the checksum mismatch downstream).
+#[must_use]
 pub fn mrz_char_value(c: char) -> u8 {
     match c {
         '0'..='9' => c as u8 - b'0',
         'A'..='Z' => (c as u8 - b'A') + 10,
-        '<' => 0,
+        // `<` (filler) and any non-conforming character both map to 0.
         _ => 0,
+    }
+}
+
+/// Decode a single ASCII check-digit byte to its `0..=9` value.
+///
+/// Returns the sentinel `255` for any non-digit byte (e.g. a `<`
+/// filler in an empty optional field) so the caller's equality
+/// comparison against a computed check digit fails closed rather
+/// than matching a real digit.
+fn check_digit_byte(b: u8) -> u8 {
+    match b {
+        b'0'..=b'9' => b - b'0',
+        _ => 255,
     }
 }
 
@@ -108,12 +126,14 @@ pub enum MrzFormat {
 
 impl ParsedMrz {
     /// Whether every checksum verified the parser computed passed.
+    #[must_use]
     pub fn all_checksums_valid(&self) -> bool {
         self.checksums.values().all(|v| *v)
     }
 
     /// Convert to the [`MrzSignals`] surface that the orchestrator
     /// emits in the final attestation.
+    #[must_use]
     pub fn to_signals(&self) -> MrzSignals {
         MrzSignals {
             all_checksums_valid: self.all_checksums_valid(),
@@ -129,10 +149,15 @@ impl ParsedMrz {
 /// Parse an MRZ from one to three lines of input.
 ///
 /// Accepts a slice of lines; auto-detects the format from line count
-/// + length. The parse is lenient: it always returns a [`ParsedMrz`]
+/// and length. The parse is lenient: it always returns a [`ParsedMrz`]
 /// even when checksums fail, populating the `checksums` map with the
 /// failure detail. Hard failures (wrong line count, unparseable
 /// structure) return [`Error::MrzParseFailed`].
+///
+/// # Errors
+///
+/// Returns [`Error::MrzParseFailed`] when the line count is not 2 or 3,
+/// or when the line lengths match no recognized TD format.
 pub fn parse_mrz(lines: &[&str]) -> Result<ParsedMrz, Error> {
     match lines.len() {
         2 => match (lines[0].len(), lines[1].len()) {
@@ -176,6 +201,7 @@ pub fn parse_mrz(lines: &[&str]) -> Result<ParsedMrz, Error> {
 ///   [42]    personal-number check digit
 ///   [43]    composite check digit (over [0-9, 13-19, 21-27, 28-42])
 /// ```
+#[allow(clippy::unnecessary_wraps)] // uniform fallible signature: stricter parsing will reject malformed input here
 fn parse_td3(l1: &str, l2: &str) -> Result<ParsedMrz, Error> {
     let l1 = l1.as_bytes();
     let l2 = l2.as_bytes();
@@ -185,16 +211,16 @@ fn parse_td3(l1: &str, l2: &str) -> Result<ParsedMrz, Error> {
     let (surname, given_names) = parse_name_field(&l1[5..44]);
 
     let document_number = ascii_clean(&l2[0..9]);
-    let dn_check = (l2[9] as char).to_digit(10).unwrap_or(255) as u8;
+    let dn_check = check_digit_byte(l2[9]);
     let nationality = ascii_clean(&l2[10..13]);
     let dob = ascii_clean(&l2[13..19]);
-    let dob_check = (l2[19] as char).to_digit(10).unwrap_or(255) as u8;
+    let dob_check = check_digit_byte(l2[19]);
     let sex = ascii_clean(&l2[20..21]);
     let expiration = ascii_clean(&l2[21..27]);
-    let exp_check = (l2[27] as char).to_digit(10).unwrap_or(255) as u8;
+    let exp_check = check_digit_byte(l2[27]);
     let personal = std::str::from_utf8(&l2[28..42]).unwrap_or("");
-    let personal_check = (l2[42] as char).to_digit(10).unwrap_or(255) as u8;
-    let composite_check = (l2[43] as char).to_digit(10).unwrap_or(255) as u8;
+    let personal_check = check_digit_byte(l2[42]);
+    let composite_check = check_digit_byte(l2[43]);
 
     let mut checksums = BTreeMap::new();
     checksums.insert(
@@ -258,6 +284,7 @@ fn parse_td3(l1: &str, l2: &str) -> Result<ParsedMrz, Error> {
 ///              check(1) + sex(1) + exp(6) + check(1) + optional(7) +
 ///              composite-check(1)
 /// ```
+#[allow(clippy::unnecessary_wraps)] // uniform fallible signature: stricter parsing will reject malformed input here
 fn parse_td2(l1: &str, l2: &str) -> Result<ParsedMrz, Error> {
     let l1 = l1.as_bytes();
     let l2 = l2.as_bytes();
@@ -266,14 +293,14 @@ fn parse_td2(l1: &str, l2: &str) -> Result<ParsedMrz, Error> {
     let (surname, given_names) = parse_name_field(&l1[5..36]);
 
     let document_number = ascii_clean(&l2[0..9]);
-    let dn_check = (l2[9] as char).to_digit(10).unwrap_or(255) as u8;
+    let dn_check = check_digit_byte(l2[9]);
     let nationality = ascii_clean(&l2[10..13]);
     let dob = ascii_clean(&l2[13..19]);
-    let dob_check = (l2[19] as char).to_digit(10).unwrap_or(255) as u8;
+    let dob_check = check_digit_byte(l2[19]);
     let sex = ascii_clean(&l2[20..21]);
     let expiration = ascii_clean(&l2[21..27]);
-    let exp_check = (l2[27] as char).to_digit(10).unwrap_or(255) as u8;
-    let composite_check = (l2[35] as char).to_digit(10).unwrap_or(255) as u8;
+    let exp_check = check_digit_byte(l2[27]);
+    let composite_check = check_digit_byte(l2[35]);
 
     let mut checksums = BTreeMap::new();
     checksums.insert(
@@ -324,6 +351,7 @@ fn parse_td2(l1: &str, l2: &str) -> Result<ParsedMrz, Error> {
 ///              nationality(3) + optional(11) + composite-check(1)
 /// Line 3 (30): name (surname<<given, padded to 30)
 /// ```
+#[allow(clippy::unnecessary_wraps)] // uniform fallible signature: stricter parsing will reject malformed input here
 fn parse_td1(l1: &str, l2: &str, l3: &str) -> Result<ParsedMrz, Error> {
     let l1b = l1.as_bytes();
     let l2b = l2.as_bytes();
@@ -331,15 +359,15 @@ fn parse_td1(l1: &str, l2: &str, l3: &str) -> Result<ParsedMrz, Error> {
     let document_type = ascii_clean(&l1b[0..2]);
     let issuing_country = ascii_clean(&l1b[2..5]);
     let document_number = ascii_clean(&l1b[5..14]);
-    let dn_check = (l1b[14] as char).to_digit(10).unwrap_or(255) as u8;
+    let dn_check = check_digit_byte(l1b[14]);
 
     let dob = ascii_clean(&l2b[0..6]);
-    let dob_check = (l2b[6] as char).to_digit(10).unwrap_or(255) as u8;
+    let dob_check = check_digit_byte(l2b[6]);
     let sex = ascii_clean(&l2b[7..8]);
     let expiration = ascii_clean(&l2b[8..14]);
-    let exp_check = (l2b[14] as char).to_digit(10).unwrap_or(255) as u8;
+    let exp_check = check_digit_byte(l2b[14]);
     let nationality = ascii_clean(&l2b[15..18]);
-    let composite_check = (l2b[29] as char).to_digit(10).unwrap_or(255) as u8;
+    let composite_check = check_digit_byte(l2b[29]);
 
     let (surname, given_names) = parse_name_field(&l3b[0..30]);
 
@@ -466,10 +494,8 @@ mod tests {
     /// `ERIKSSON, ANNA MARIA` — Sweden, born 1974-08-12, expires
     /// 2012-04-15. Document number L898902C3. This is the textbook
     /// example MRZ — verified to compute valid checksums.
-    const ICAO_TD3_LINE1: &str =
-        "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<";
-    const ICAO_TD3_LINE2: &str =
-        "L898902C36UTO7408122F1204159ZE184226B<<<<<10";
+    const ICAO_TD3_LINE1: &str = "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<";
+    const ICAO_TD3_LINE2: &str = "L898902C36UTO7408122F1204159ZE184226B<<<<<10";
 
     #[test]
     fn parse_td3_icao_example() {

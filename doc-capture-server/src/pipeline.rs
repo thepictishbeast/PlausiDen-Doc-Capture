@@ -9,9 +9,7 @@
 //! and face-match are stubs returning `None` signals until their
 //! respective phases ship.
 
-use doc_capture_core::{
-    hash_field, Attestation, DocumentClaims, Error, PipelineSignals,
-};
+use doc_capture_core::{hash_field, Attestation, DocumentClaims, Error, PipelineSignals};
 use doc_capture_face::FaceMatchEngine;
 use doc_capture_ocr::OcrEngine;
 use std::sync::Arc;
@@ -71,8 +69,9 @@ pub struct CaptureOutput {
 /// `ocr` is the engine injected by the server. Tests can pass a
 /// Mock with pre-loaded fixtures; production deployments pass a
 /// real engine like `TesseractCliEngine`.
+#[allow(clippy::too_many_lines)] // linear stage-by-stage orchestration reads clearest as one function
 pub fn run(
-    input: CaptureInput,
+    input: &CaptureInput,
     ocr: &Arc<dyn OcrEngine>,
     face: &Arc<dyn FaceMatchEngine>,
 ) -> CaptureOutput {
@@ -84,7 +83,7 @@ pub fn run(
 
     // ── MRZ stage (passport / TD1-TD3 ID card) ───────────────────
     if !input.mrz_lines.is_empty() {
-        let line_refs: Vec<&str> = input.mrz_lines.iter().map(|s| s.as_str()).collect();
+        let line_refs: Vec<&str> = input.mrz_lines.iter().map(String::as_str).collect();
         match doc_capture_mrz::parse_mrz(&line_refs) {
             Ok(mrz) => {
                 signals.mrz = Some(mrz.to_signals());
@@ -202,7 +201,7 @@ pub fn run(
         }
     }
 
-    let _ = input.template_id;
+    let _ = &input.template_id;
 
     // Cross-validator: if both MRZ and AAMVA produced claims, the
     // two surname fields should agree (case-insensitive, trimmed).
@@ -268,7 +267,7 @@ fn names_match(a: &str, b: &str) -> bool {
 /// value). A minimal default disclosure surfaces only
 /// `issuing_state` and `age_over_18` in `disclosed_claims` —
 /// consumers who need more can compute it themselves from the
-/// disclosed_field_hashes by supplying the salted plaintext.
+/// `disclosed_field_hashes` by supplying the salted plaintext.
 fn build_attestation(
     claims: &DocumentClaims,
     signals: &PipelineSignals,
@@ -303,10 +302,7 @@ fn build_attestation(
     // raw DOB. Default disclosure includes it because most
     // consumers need it.
     if let Some(age_ok) = age_over(&claims.date_of_birth, 18) {
-        disclosed.insert(
-            "age_over_18".to_string(),
-            serde_json::Value::Bool(age_ok),
-        );
+        disclosed.insert("age_over_18".to_string(), serde_json::Value::Bool(age_ok));
     }
 
     Attestation {
@@ -323,7 +319,7 @@ fn build_attestation(
 /// Return `Some(true)` when DOB plus `years_required` is on or
 /// before today, `Some(false)` when it isn't, `None` when DOB is
 /// unparseable.
-fn age_over(iso_dob: &str, years_required: i32) -> Option<bool> {
+fn age_over(iso_dob: &str, years_required: u32) -> Option<bool> {
     let dob = chrono::NaiveDate::parse_from_str(iso_dob, "%Y-%m-%d").ok()?;
     let today = chrono::Utc::now().date_naive();
     // years_since returns None when self < since (future DOB).
@@ -331,7 +327,7 @@ fn age_over(iso_dob: &str, years_required: i32) -> Option<bool> {
     // rather than "unknown" — the parse succeeded so we know the
     // date is well-formed.
     let age_today = today.years_since(dob).unwrap_or(0);
-    Some(age_today >= years_required as u32)
+    Some(age_today >= years_required)
 }
 
 #[cfg(test)]
@@ -380,14 +376,18 @@ mod tests {
 
     #[test]
     fn empty_input_yields_empty_output() {
-        let out = run(CaptureInput {
-            front_bytes: vec![],
-            back_bytes: vec![],
-            selfie_bytes: vec![],
-            template_id: "test".to_string(),
-            mrz_lines: vec![],
-            salt: b"test-salt".to_vec(),
-        }, &mock_ocr(), &mock_face());
+        let out = run(
+            &CaptureInput {
+                front_bytes: vec![],
+                back_bytes: vec![],
+                selfie_bytes: vec![],
+                template_id: "test".to_string(),
+                mrz_lines: vec![],
+                salt: b"test-salt".to_vec(),
+            },
+            &mock_ocr(),
+            &mock_face(),
+        );
         assert!(out.claims.is_none());
         assert!(out.attestation.is_none());
         assert!(out.signals.mrz.is_none());
@@ -401,14 +401,18 @@ mod tests {
         // ICAO ERIKSSON example.
         let l1 = "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<".to_string();
         let l2 = "L898902C36UTO7408122F1204159ZE184226B<<<<<10".to_string();
-        let out = run(CaptureInput {
-            front_bytes: vec![],
-            back_bytes: vec![],
-            selfie_bytes: vec![],
-            template_id: "icao-passport-v1".to_string(),
-            mrz_lines: vec![l1, l2],
-            salt: b"test-salt".to_vec(),
-        }, &mock_ocr(), &mock_face());
+        let out = run(
+            &CaptureInput {
+                front_bytes: vec![],
+                back_bytes: vec![],
+                selfie_bytes: vec![],
+                template_id: "icao-passport-v1".to_string(),
+                mrz_lines: vec![l1, l2],
+                salt: b"test-salt".to_vec(),
+            },
+            &mock_ocr(),
+            &mock_face(),
+        );
         let claims = out.claims.expect("MRZ should produce claims");
         assert_eq!(claims.surname, "ERIKSSON");
         assert_eq!(claims.given_names, "ANNA MARIA");
@@ -423,28 +427,36 @@ mod tests {
 
     #[test]
     fn mrz_malformed_records_stage_error() {
-        let out = run(CaptureInput {
-            front_bytes: vec![],
-            back_bytes: vec![],
-            selfie_bytes: vec![],
-            template_id: "test".to_string(),
-            mrz_lines: vec!["only one line".to_string()],
-            salt: vec![],
-        }, &mock_ocr(), &mock_face());
+        let out = run(
+            &CaptureInput {
+                front_bytes: vec![],
+                back_bytes: vec![],
+                selfie_bytes: vec![],
+                template_id: "test".to_string(),
+                mrz_lines: vec!["only one line".to_string()],
+                salt: vec![],
+            },
+            &mock_ocr(),
+            &mock_face(),
+        );
         assert!(out.claims.is_none());
         assert!(out.stage_errors.iter().any(|e| e.starts_with("mrz:")));
     }
 
     #[test]
     fn invalid_back_image_records_stage_error() {
-        let out = run(CaptureInput {
-            front_bytes: vec![],
-            back_bytes: b"not an image".to_vec(),
-            selfie_bytes: vec![],
-            template_id: "us-dl".to_string(),
-            mrz_lines: vec![],
-            salt: vec![],
-        }, &mock_ocr(), &mock_face());
+        let out = run(
+            &CaptureInput {
+                front_bytes: vec![],
+                back_bytes: b"not an image".to_vec(),
+                selfie_bytes: vec![],
+                template_id: "us-dl".to_string(),
+                mrz_lines: vec![],
+                salt: vec![],
+            },
+            &mock_ocr(),
+            &mock_face(),
+        );
         assert!(out.claims.is_none());
         assert!(out
             .stage_errors

@@ -1,6 +1,10 @@
 //! Library entry point — re-exports the Router builder so
 //! integration tests can drive the server without binding a socket.
 
+#![forbid(unsafe_code)]
+#![deny(missing_docs)]
+#![warn(clippy::all, clippy::pedantic)]
+
 pub mod handlers;
 pub mod pipeline;
 pub mod state;

@@ -8,7 +8,7 @@
 //!   - [`MockFaceMatchEngine`] — deterministic, returns canned
 //!     distances + liveness verdicts. Always available, no native
 //!     deps. Used by tests and "face match disabled" deployments.
-//!   - Real engines (InsightFace via ONNX, dlib via FFI, etc.) —
+//!   - Real engines (`InsightFace` via ONNX, dlib via FFI, etc.) —
 //!     deferred to a follow-up phase. Feature-flag names reserved
 //!     in `Cargo.toml` so consumers can pin Cargo entries today
 //!     and the engine lands without API churn.
@@ -40,7 +40,9 @@
 //! it through a separate channel — the trait surface here is
 //! single-frame passive liveness.
 
+#![forbid(unsafe_code)]
 #![deny(missing_docs)]
+#![warn(clippy::all, clippy::pedantic)]
 
 use doc_capture_core::{Error, FaceMatchSignals};
 use std::collections::HashMap;
@@ -54,6 +56,11 @@ pub trait FaceMatchEngine: Send + Sync {
     /// image (the pipeline crops the portrait region upstream).
     /// `threshold` is the cosine-distance threshold below which
     /// the engine reports `matched: true`. Typical: 0.5.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error`] if the underlying engine fails to decode
+    /// either image or the recognizer backend errors.
     fn match_faces(
         &self,
         selfie_bytes: &[u8],
@@ -82,6 +89,7 @@ impl MockFaceMatchEngine {
     /// [`with_fixture`](Self::with_fixture) returns the zero-signal
     /// "no match" outcome (distance 1.0, matched false, liveness
     /// None).
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -93,6 +101,7 @@ impl MockFaceMatchEngine {
     /// The fixture is keyed on the concatenation
     /// `sha256(selfie) || sha256(portrait)`, so changing either
     /// image creates a different key.
+    #[must_use]
     pub fn with_fixture(
         mut self,
         selfie_bytes: &[u8],
@@ -142,7 +151,11 @@ fn fixture_key(selfie_bytes: &[u8], portrait_bytes: &[u8]) -> String {
     let selfie_hash = h.finalize_reset();
     h.update(portrait_bytes);
     let portrait_hash = h.finalize();
-    format!("{}|{}", hex::encode(selfie_hash), hex::encode(portrait_hash))
+    format!(
+        "{}|{}",
+        hex::encode(selfie_hash),
+        hex::encode(portrait_hash)
+    )
 }
 
 #[cfg(test)]
@@ -155,8 +168,8 @@ mod tests {
         let result = engine
             .match_faces(b"any selfie", b"any portrait", 0.5)
             .unwrap();
-        assert_eq!(result.distance, 1.0);
-        assert_eq!(result.threshold, 0.5);
+        assert!((result.distance - 1.0).abs() < f32::EPSILON);
+        assert!((result.threshold - 0.5).abs() < f32::EPSILON);
         assert!(!result.matched);
         assert_eq!(result.liveness_passed, None);
     }
@@ -171,10 +184,9 @@ mod tests {
             matched: true,
             liveness_passed: Some(true),
         };
-        let engine =
-            MockFaceMatchEngine::new().with_fixture(selfie, portrait, canned.clone());
+        let engine = MockFaceMatchEngine::new().with_fixture(selfie, portrait, canned.clone());
         let result = engine.match_faces(selfie, portrait, 0.5).unwrap();
-        assert_eq!(result.distance, 0.32);
+        assert!((result.distance - 0.32).abs() < f32::EPSILON);
         assert!(result.matched);
         assert_eq!(result.liveness_passed, Some(true));
     }
@@ -218,8 +230,8 @@ mod tests {
         let engine = MockFaceMatchEngine::new();
         let r1 = engine.match_faces(b"a", b"b", 0.3).unwrap();
         let r2 = engine.match_faces(b"a", b"b", 0.7).unwrap();
-        assert_eq!(r1.threshold, 0.3);
-        assert_eq!(r2.threshold, 0.7);
+        assert!((r1.threshold - 0.3).abs() < f32::EPSILON);
+        assert!((r2.threshold - 0.7).abs() < f32::EPSILON);
     }
 
     #[test]

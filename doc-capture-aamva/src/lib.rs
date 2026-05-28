@@ -25,7 +25,9 @@
 //! are increasingly rare and would require a separate decoder. The
 //! parser fails fast with `AamvaParseFailed` on pre-v2 layouts.
 
+#![forbid(unsafe_code)]
 #![deny(missing_docs)]
+#![warn(clippy::all, clippy::pedantic)]
 
 use doc_capture_core::{Error, Pdf417Signals};
 use std::collections::BTreeMap;
@@ -79,6 +81,7 @@ impl ParsedAamva {
     /// Convert to the [`Pdf417Signals`] surface for the final
     /// attestation. The caller fills in `barcode_decoded` and
     /// `pdf417_crc_valid` from the upstream PDF417 binary decode.
+    #[must_use]
     pub fn to_signals(&self, barcode_decoded: bool, pdf417_crc_valid: bool) -> Pdf417Signals {
         Pdf417Signals {
             barcode_decoded,
@@ -90,6 +93,7 @@ impl ParsedAamva {
 
     /// Map AAMVA sex code to the [`doc_capture_core::DocumentClaims`]
     /// sex field convention ("M" / "F" / "X").
+    #[must_use]
     pub fn sex_normalized(&self) -> &'static str {
         match self.sex_aamva.as_str() {
             "1" => "M",
@@ -131,6 +135,13 @@ impl ParsedAamva {
 /// 0x0A) header containing the 2-char subfile type literal followed
 /// by data-element triples `[3-char element ID][value]\x0A` until
 /// the subfile length is exhausted.
+///
+/// # Errors
+///
+/// Returns [`Error::AamvaParseFailed`] if the payload is missing the
+/// `ANSI ` file-type literal, is too short to contain a valid header,
+/// or otherwise does not conform to the AAMVA Card Design Standard.
+#[allow(clippy::too_many_lines)] // single linear parse of the AAMVA header + subfile layout reads clearest inline
 pub fn parse_aamva(payload: &str) -> Result<ParsedAamva, Error> {
     let bytes = payload.as_bytes();
 
@@ -143,9 +154,9 @@ pub fn parse_aamva(payload: &str) -> Result<ParsedAamva, Error> {
     // Find the "ANSI " literal (allows minor whitespace variance
     // from real-world cards which sometimes have an extra newline
     // or different segment terminator byte).
-    let ansi_idx = payload.find("ANSI ").ok_or_else(|| {
-        Error::AamvaParseFailed("missing 'ANSI ' file-type literal".into())
-    })?;
+    let ansi_idx = payload
+        .find("ANSI ")
+        .ok_or_else(|| Error::AamvaParseFailed("missing 'ANSI ' file-type literal".into()))?;
     let after_ansi = ansi_idx + 5;
     if bytes.len() < after_ansi + 15 {
         return Err(Error::AamvaParseFailed(
@@ -210,10 +221,9 @@ pub fn parse_aamva(payload: &str) -> Result<ParsedAamva, Error> {
         // Find next newline.
         let line_end = subfile[cursor..]
             .find('\n')
-            .map(|i| cursor + i)
-            .unwrap_or(subfile.len());
+            .map_or(subfile.len(), |i| cursor + i);
         let line = subfile[cursor..line_end].trim_end_matches('\r');
-        if line.len() >= 3 && line.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false) {
+        if line.len() >= 3 && line.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
             // Element ID is 3 chars, value is the rest.
             let id = &line[0..3];
             // Skip the subfile-type indicator (DL/ID) which appears
@@ -245,14 +255,8 @@ pub fn parse_aamva(payload: &str) -> Result<ParsedAamva, Error> {
         .or_else(|| data_elements.get("DCT").cloned())
         .unwrap_or_default();
     let middle_name = data_elements.get("DAD").cloned().unwrap_or_default();
-    let document_number = data_elements
-        .get("DAQ")
-        .cloned()
-        .unwrap_or_default();
-    let address_street = data_elements
-        .get("DAG")
-        .cloned()
-        .unwrap_or_default();
+    let document_number = data_elements.get("DAQ").cloned().unwrap_or_default();
+    let address_street = data_elements.get("DAG").cloned().unwrap_or_default();
     let address_city = data_elements.get("DAI").cloned().unwrap_or_default();
     let address_state = data_elements.get("DAJ").cloned().unwrap_or_default();
     let address_postal_code = data_elements.get("DAK").cloned().unwrap_or_default();
@@ -345,7 +349,7 @@ mod tests {
         body.push_str("DAJUT\n"); // state
         body.push_str("DAK847900000\n"); // zip
         body.push_str("DBC1\n"); // sex male
-        // Pad body to exactly 150 bytes.
+                                 // Pad body to exactly 150 bytes.
         while body.len() < 150 {
             body.push(' ');
         }
@@ -431,9 +435,15 @@ mod tests {
             data_elements: BTreeMap::new(),
         };
         assert_eq!(p.sex_normalized(), "M");
-        let p2 = ParsedAamva { sex_aamva: "2".into(), ..p.clone() };
+        let p2 = ParsedAamva {
+            sex_aamva: "2".into(),
+            ..p.clone()
+        };
         assert_eq!(p2.sex_normalized(), "F");
-        let p3 = ParsedAamva { sex_aamva: "9".into(), ..p };
+        let p3 = ParsedAamva {
+            sex_aamva: "9".into(),
+            ..p
+        };
         assert_eq!(p3.sex_normalized(), "X");
     }
 

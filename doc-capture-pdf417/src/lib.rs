@@ -7,20 +7,26 @@
 //! ## Why a thin wrapper
 //!
 //! [`rxing`](https://crates.io/crates/rxing) is the de-facto Rust
-//! port of the ZXing barcode library. It supports every modern 2D
+//! port of the `ZXing` barcode library. It supports every modern 2D
 //! and 1D barcode format including PDF417 with full Reed-Solomon
 //! error correction and the various binary/text mode-switching
 //! states the PDF417 spec defines. Re-implementing all that would
 //! take months and would duplicate work that's already been audited
-//! by the ZXing community.
+//! by the `ZXing` community.
 //!
 //! Per the project's AVP-2 absorption doctrine we wrap rxing behind
 //! a small adapter so the consumer-facing surface is tiny and stable.
 //! When the AVP-2 absorption pass for rxing completes we can swap to
 //! a hardened fork without touching call sites.
 
+#![forbid(unsafe_code)]
 #![deny(missing_docs)]
+#![warn(clippy::all, clippy::pedantic)]
 
+// FOSS-ABSORBED: rxing 0.9 (Apache-2.0), the Rust port of ZXing. Wrapped
+// behind the thin `decode_pdf417_from_image_bytes` adapter below so the
+// dependency surface stays tiny and a future hardened fork can be swapped
+// in without touching call sites. Full AVP-2 absorption pass pending.
 use doc_capture_core::Error;
 use rxing::BarcodeFormat;
 
@@ -31,27 +37,26 @@ use rxing::BarcodeFormat;
 /// string for US driver licenses, or arbitrary text for other
 /// PDF417 use cases.
 ///
+/// # Errors
+///
 /// Returns [`Error::InvalidImage`] when the image bytes can't be
 /// decoded as an image, [`Error::Pdf417DecodeFailed`] when no PDF417
 /// barcode is found or the decode fails for any other reason.
 pub fn decode_pdf417_from_image_bytes(bytes: &[u8]) -> Result<String, Error> {
-    let result = rxing::helpers::detect_in_buffer(
-        bytes,
-        Some(BarcodeFormat::PDF_417),
-    )
-    .map_err(|e| {
-        // rxing surfaces two failure shapes: image-decode failure
-        // (bytes weren't an image) and detect failure (image OK but
-        // no PDF417 found / unreadable). Distinguish by the prefix
-        // of the error string — the image-load path emits "buffer
-        // cannot be loaded as image" verbatim per helpers.rs:138.
-        let s = e.to_string();
-        if s.contains("cannot be loaded as image") {
-            Error::InvalidImage(s)
-        } else {
-            Error::Pdf417DecodeFailed(s)
-        }
-    })?;
+    let result =
+        rxing::helpers::detect_in_buffer(bytes, Some(BarcodeFormat::PDF_417)).map_err(|e| {
+            // rxing surfaces two failure shapes: image-decode failure
+            // (bytes weren't an image) and detect failure (image OK but
+            // no PDF417 found / unreadable). Distinguish by the prefix
+            // of the error string — the image-load path emits "buffer
+            // cannot be loaded as image" verbatim per helpers.rs:138.
+            let s = e.to_string();
+            if s.contains("cannot be loaded as image") {
+                Error::InvalidImage(s)
+            } else {
+                Error::Pdf417DecodeFailed(s)
+            }
+        })?;
 
     Ok(result.getText().to_string())
 }

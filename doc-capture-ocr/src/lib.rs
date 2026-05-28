@@ -7,12 +7,12 @@
 //!   - [`MockOcrEngine`] — deterministic, returns canned text.
 //!     Always available, no native deps. Used by tests and in
 //!     "OCR disabled" deployments.
-//!   - [`TesseractCliEngine`] — shells out to the `tesseract`
+//!   - `TesseractCliEngine` — shells out to the `tesseract`
 //!     command-line binary. Available when the crate is built
 //!     with `--features tesseract-cli`. Tesseract must be on the
 //!     server's PATH at runtime.
 //!
-//! Future engines (FFI Tesseract via `tesseract-rs`, PaddleOCR via
+//! Future engines (FFI Tesseract via `tesseract-rs`, `PaddleOCR` via
 //! sidecar, vendor adapters) implement the same trait without
 //! touching consumer call sites.
 //!
@@ -25,7 +25,9 @@
 //! returning. On panic / crash the OS-level temp-file cleanup
 //! catches anything the `Drop` missed.
 
+#![forbid(unsafe_code)]
 #![deny(missing_docs)]
+#![warn(clippy::all, clippy::pedantic)]
 
 use doc_capture_core::{Error, OcrSignals};
 use std::collections::HashMap;
@@ -63,6 +65,11 @@ pub trait OcrEngine: Send + Sync {
     ///
     /// `language` is an engine-specific hint (e.g. `"eng"` for
     /// Tesseract). Engines that don't honor it ignore the value.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error`] if the image cannot be decoded or the
+    /// underlying OCR backend fails.
     fn recognize(&self, image_bytes: &[u8], language: &str) -> Result<OcrResult, Error>;
 
     /// Engine identifier for logs and `/info`.
@@ -88,6 +95,7 @@ impl MockOcrEngine {
     /// Construct an empty Mock. Any image not added via
     /// [`with_fixture`](Self::with_fixture) returns the zero-signal
     /// "no recognition" outcome.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -95,6 +103,7 @@ impl MockOcrEngine {
     /// Register a canned OCR result for a specific image-byte hash.
     /// Tests use this to set up known-good and known-bad fixtures
     /// without involving an OCR engine.
+    #[must_use]
     pub fn with_fixture(mut self, image_bytes: &[u8], result: OcrResult) -> Self {
         let key = hex::encode(sha256(image_bytes));
         self.fixtures.insert(key, result);
@@ -178,16 +187,11 @@ pub mod tesseract_cli {
     }
 
     impl OcrEngine for TesseractCliEngine {
-        fn recognize(
-            &self,
-            image_bytes: &[u8],
-            language: &str,
-        ) -> Result<OcrResult, Error> {
+        fn recognize(&self, image_bytes: &[u8], language: &str) -> Result<OcrResult, Error> {
             // Write image bytes to a temp file. The TempDir's
             // Drop impl deletes the directory after the function
             // returns even on early-return / panic.
-            let dir = tempfile::tempdir()
-                .map_err(|e| Error::OcrFailed(format!("tempdir: {e}")))?;
+            let dir = tempfile::tempdir().map_err(|e| Error::OcrFailed(format!("tempdir: {e}")))?;
             let img_path = dir.path().join("input");
             {
                 let mut f = std::fs::File::create(&img_path)
@@ -207,9 +211,7 @@ pub mod tesseract_cli {
                 .arg("-l")
                 .arg(lang)
                 .output()
-                .map_err(|e| {
-                    Error::OcrFailed(format!("tesseract spawn: {e}"))
-                })?;
+                .map_err(|e| Error::OcrFailed(format!("tesseract spawn: {e}")))?;
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -261,7 +263,7 @@ mod tests {
         let engine = MockOcrEngine::new();
         let result = engine.recognize(b"any unknown image bytes", "eng").unwrap();
         assert_eq!(result.text, "");
-        assert_eq!(result.signals.text_confidence, 0.0);
+        assert!(result.signals.text_confidence.abs() < f32::EPSILON);
         assert!(!result.signals.required_fields_present);
     }
 
@@ -289,7 +291,7 @@ mod tests {
         let engine = MockOcrEngine::new().with_fixture(bytes, canned.clone());
         let result = engine.recognize(bytes, "eng").unwrap();
         assert_eq!(result.text, canned.text);
-        assert_eq!(result.signals.text_confidence, 0.92);
+        assert!((result.signals.text_confidence - 0.92).abs() < f32::EPSILON);
         assert!(result.signals.required_fields_present);
         assert_eq!(result.lines.len(), 2);
     }

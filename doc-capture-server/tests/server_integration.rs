@@ -53,10 +53,7 @@ async fn capture_empty_multipart_returns_400_or_empty_claims() {
             Request::builder()
                 .method("POST")
                 .uri("/capture")
-                .header(
-                    "content-type",
-                    "multipart/form-data; boundary=BOUNDARY",
-                )
+                .header("content-type", "multipart/form-data; boundary=BOUNDARY")
                 .body(Body::from(body))
                 .unwrap(),
         )
@@ -77,24 +74,15 @@ async fn capture_with_mrz_extracts_passport_claims() {
     let body = multipart_body(&[
         ("template_id", "icao-passport-v1"),
         ("salt", "test-subject-salt"),
-        (
-            "mrz_line_1",
-            "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<",
-        ),
-        (
-            "mrz_line_2",
-            "L898902C36UTO7408122F1204159ZE184226B<<<<<10",
-        ),
+        ("mrz_line_1", "P<UTOERIKSSON<<ANNA<MARIA<<<<<<<<<<<<<<<<<<<"),
+        ("mrz_line_2", "L898902C36UTO7408122F1204159ZE184226B<<<<<10"),
     ]);
     let res = app
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/capture")
-                .header(
-                    "content-type",
-                    "multipart/form-data; boundary=BOUNDARY",
-                )
+                .header("content-type", "multipart/form-data; boundary=BOUNDARY")
                 .body(Body::from(body))
                 .unwrap(),
         )
@@ -108,12 +96,10 @@ async fn capture_with_mrz_extracts_passport_claims() {
     assert!(!att.is_null());
     assert_eq!(att["claim_type"], "document_capture_v1");
     // Surname hash should be present.
-    assert!(
-        att["disclosed_field_hashes"]["surname"]
-            .as_str()
-            .map(|s| s.len() == 64)
-            .unwrap_or(false)
-    );
+    assert!(att["disclosed_field_hashes"]["surname"]
+        .as_str()
+        .map(|s| s.len() == 64)
+        .unwrap_or(false));
     // age_over_18 should be true (DOB 1974 -> > 18).
     assert_eq!(att["disclosed_claims"]["age_over_18"], true);
     let mrz_sig = &resp["signals"]["mrz"];
@@ -139,10 +125,7 @@ async fn capture_with_pdf417_image_extracts_aamva_claims() {
             Request::builder()
                 .method("POST")
                 .uri("/capture")
-                .header(
-                    "content-type",
-                    "multipart/form-data; boundary=BOUNDARY",
-                )
+                .header("content-type", "multipart/form-data; boundary=BOUNDARY")
                 .body(Body::from(body))
                 .unwrap(),
         )
@@ -164,7 +147,10 @@ async fn capture_with_pdf417_image_extracts_aamva_claims() {
         "expected Utah IIN; got: {pdf417_sig}"
     );
     // Disclosed state should be UT.
-    assert_eq!(resp["attestation"]["disclosed_claims"]["issuing_state"], "UT");
+    assert_eq!(
+        resp["attestation"]["disclosed_claims"]["issuing_state"],
+        "UT"
+    );
 }
 
 #[tokio::test]
@@ -179,10 +165,7 @@ async fn capture_with_corrupt_back_image_records_stage_error() {
             Request::builder()
                 .method("POST")
                 .uri("/capture")
-                .header(
-                    "content-type",
-                    "multipart/form-data; boundary=BOUNDARY",
-                )
+                .header("content-type", "multipart/form-data; boundary=BOUNDARY")
                 .body(Body::from(body))
                 .unwrap(),
         )
@@ -193,10 +176,9 @@ async fn capture_with_corrupt_back_image_records_stage_error() {
     let resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(resp["verified"], false);
     let errs = resp["stage_errors"].as_array().unwrap();
-    assert!(errs.iter().any(|e| e
-        .as_str()
-        .map(|s| s.contains("pdf417"))
-        .unwrap_or(false)));
+    assert!(errs
+        .iter()
+        .any(|e| e.as_str().map(|s| s.contains("pdf417")).unwrap_or(false)));
 }
 
 // ─── helpers ────────────────────────────────────────────────────
@@ -298,8 +280,7 @@ fn synthesize_pdf417_png(text: &str) -> Result<Vec<u8>, String> {
             buf.push(if bitmatrix.get(x, y) { 0 } else { 255 });
         }
     }
-    let img =
-        image::GrayImage::from_raw(w, h, buf).ok_or_else(|| "image::from_raw".to_string())?;
+    let img = image::GrayImage::from_raw(w, h, buf).ok_or_else(|| "image::from_raw".to_string())?;
     let dyn_img = image::DynamicImage::ImageLuma8(img);
     let mut png = Vec::new();
     let mut cur = std::io::Cursor::new(&mut png);
@@ -412,10 +393,12 @@ async fn maximalist_e2e_all_five_stages_fire() {
     let ocr_engine = std::sync::Arc::new(
         doc_capture_ocr::MockOcrEngine::new().with_fixture(&front_jpeg, ocr_fixture),
     );
-    let face_engine = std::sync::Arc::new(
-        doc_capture_face::MockFaceMatchEngine::new()
-            .with_fixture(&selfie_jpeg, &front_jpeg, face_fixture),
-    );
+    let face_engine =
+        std::sync::Arc::new(doc_capture_face::MockFaceMatchEngine::new().with_fixture(
+            &selfie_jpeg,
+            &front_jpeg,
+            face_fixture,
+        ));
     let state = doc_capture_server::AppState::new()
         .with_ocr_engine(ocr_engine)
         .with_face_engine(face_engine);
@@ -447,10 +430,7 @@ async fn maximalist_e2e_all_five_stages_fire() {
             Request::builder()
                 .method("POST")
                 .uri("/capture")
-                .header(
-                    "content-type",
-                    "multipart/form-data; boundary=BOUNDARY",
-                )
+                .header("content-type", "multipart/form-data; boundary=BOUNDARY")
                 .body(Body::from(body))
                 .unwrap(),
         )
@@ -495,7 +475,10 @@ async fn maximalist_e2e_all_five_stages_fire() {
     assert_eq!(signals["ocr"]["required_fields_present"], true);
     // Tamper score should be low for the synthetic gradient JPEG.
     let ela = signals["tamper"]["ela_score"].as_f64().unwrap();
-    assert!(ela < 0.05, "synthetic gradient should not flag as tampered (got {ela})");
+    assert!(
+        ela < 0.05,
+        "synthetic gradient should not flag as tampered (got {ela})"
+    );
     assert_eq!(signals["tamper"]["suspicious"], false);
 
     // Attestation properties
@@ -537,10 +520,7 @@ async fn cross_validator_catches_surname_mismatch() {
             Request::builder()
                 .method("POST")
                 .uri("/capture")
-                .header(
-                    "content-type",
-                    "multipart/form-data; boundary=BOUNDARY",
-                )
+                .header("content-type", "multipart/form-data; boundary=BOUNDARY")
                 .body(Body::from(body))
                 .unwrap(),
         )
@@ -562,4 +542,3 @@ async fn cross_validator_catches_surname_mismatch() {
         "expected cross-validation stage_error; got: {errs:?}"
     );
 }
-

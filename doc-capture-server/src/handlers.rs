@@ -32,7 +32,7 @@ pub struct InfoResponse {
     /// Server name (constant — useful for operators chaining behind
     /// reverse proxies).
     pub name: &'static str,
-    /// Version string from CARGO_PKG_VERSION.
+    /// Version string from `CARGO_PKG_VERSION`.
     pub version: &'static str,
     /// Pipeline stages currently wired into /capture.
     pub stages_wired: Vec<&'static str>,
@@ -45,11 +45,7 @@ pub struct InfoResponse {
 
 /// Handler for `GET /info`.
 pub async fn info(State(state): State<AppState>) -> Json<InfoResponse> {
-    let active_sessions = state
-        .sessions
-        .lock()
-        .map(|s| s.len())
-        .unwrap_or(0);
+    let active_sessions = state.sessions.lock().map(|s| s.len()).unwrap_or(0);
     Json(InfoResponse {
         name: "PlausiDen-Doc-Capture",
         version: env!("CARGO_PKG_VERSION"),
@@ -85,7 +81,7 @@ pub struct CaptureResponse {
     /// signals). `null` when no claims were extracted.
     pub attestation: Option<doc_capture_core::Attestation>,
     /// Disclosed plaintext claims per the default disclosure mask.
-    /// Always small (issuing_state + age_over_18); raw PII never
+    /// Always small (`issuing_state` + `age_over_18`); raw PII never
     /// appears here.
     pub disclosed_claims: serde_json::Value,
     /// Per-stage signals (also embedded in the attestation —
@@ -96,6 +92,11 @@ pub struct CaptureResponse {
 }
 
 /// Handler for `POST /capture`.
+///
+/// # Errors
+///
+/// Returns a `(StatusCode, String)` tuple when the multipart body
+/// cannot be parsed or an image exceeds the configured size cap.
 pub async fn capture(
     State(state): State<AppState>,
     multipart: Multipart,
@@ -110,7 +111,7 @@ pub async fn capture(
         mrz_lines: form.mrz_lines,
         salt: form.salt,
     };
-    let out = pipeline::run(input, &state.ocr, &state.face);
+    let out = pipeline::run(&input, &state.ocr, &state.face);
 
     // Cache the per-stage signals against the session id so
     // GET /session/{id} (phase 2.5) can return them later.
@@ -128,8 +129,9 @@ pub async fn capture(
     let disclosed_claims = out
         .attestation
         .as_ref()
-        .map(|a| serde_json::to_value(&a.disclosed_claims).unwrap_or(serde_json::Value::Null))
-        .unwrap_or(serde_json::Value::Null);
+        .map_or(serde_json::Value::Null, |a| {
+            serde_json::to_value(&a.disclosed_claims).unwrap_or(serde_json::Value::Null)
+        });
 
     Ok(Json(CaptureResponse {
         session_id: out.session_id,

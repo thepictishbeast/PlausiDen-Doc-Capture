@@ -50,13 +50,21 @@ impl SessionStore {
     }
 
     /// Fetch a session record by ID.
+    #[must_use]
     pub fn get(&self, id: &str) -> Option<SessionEntry> {
         self.inner.get(id).cloned()
     }
 
     /// Current number of stored sessions (for /info).
+    #[must_use]
     pub fn len(&self) -> usize {
         self.inner.len()
+    }
+
+    /// Whether the session store holds no records.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
     }
 }
 
@@ -80,10 +88,17 @@ pub struct AppState {
     pub face: Arc<dyn FaceMatchEngine>,
 }
 
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AppState {
-    /// Construct a fresh AppState with the [`MockOcrEngine`] and
+    /// Construct a fresh `AppState` with the [`MockOcrEngine`] and
     /// [`MockFaceMatchEngine`] as the default engine backends.
     /// Reads env vars for configuration.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             config: Arc::new(Config::default()),
@@ -96,6 +111,7 @@ impl AppState {
     /// Override the OCR engine. Use to plug in
     /// `TesseractCliEngine` or any other [`OcrEngine`]
     /// implementation in production.
+    #[must_use]
     pub fn with_ocr_engine(mut self, engine: Arc<dyn OcrEngine>) -> Self {
         self.ocr = engine;
         self
@@ -103,6 +119,7 @@ impl AppState {
 
     /// Override the face-match engine. Use to plug in a real ONNX
     /// or dlib-backed engine in production.
+    #[must_use]
     pub fn with_face_engine(mut self, engine: Arc<dyn FaceMatchEngine>) -> Self {
         self.face = engine;
         self

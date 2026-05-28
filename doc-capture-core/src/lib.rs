@@ -12,7 +12,7 @@
 //!     confidence, MRZ checksum results, tamper flags, face-match
 //!     distance). Kept separate from the attestation so an operator
 //!     can audit pipeline behaviour without re-running it.
-//!   - [`Error`] — the typed error enum every stage produces.
+//!   - [`enum@Error`] — the typed error enum every stage produces.
 //!
 //! No image bytes anywhere in this crate — only parsed claims, hashes,
 //! and structured signals. The image-handling crates live one tier up
@@ -23,7 +23,9 @@
 //! argument to [`hash_field`] is whatever stable opaque identifier
 //! the consumer wants to bind the attestation to.
 
+#![forbid(unsafe_code)]
 #![deny(missing_docs)]
+#![warn(clippy::all, clippy::pedantic)]
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -57,7 +59,7 @@ pub struct DocumentClaims {
     pub expiration_date: String,
     /// Sex marker as encoded ("M", "F", "X", or "<" for unspecified).
     pub sex: String,
-    /// Nationality per ICAO (alpha-3); usually equals issuing_country
+    /// Nationality per ICAO (alpha-3); usually equals `issuing_country`
     /// but can differ on diplomatic passports.
     pub nationality: Option<String>,
 }
@@ -241,8 +243,9 @@ pub enum Error {
 /// The `salt` argument is supplied by the consumer per-subject and
 /// is typically a stable opaque identifier the consumer already
 /// holds (e.g. a hashed user ID), so the per-attestation hash of
-/// "issuing_state=UT" is subject-distinguishable in storage and
+/// `issuing_state=UT` is subject-distinguishable in storage and
 /// cannot collide across subjects.
+#[must_use]
 pub fn hash_field(salt: &[u8], field_name: &str, value: &str) -> String {
     use sha2::Digest;
     let mut h = sha2::Sha256::new();
