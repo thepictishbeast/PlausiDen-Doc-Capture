@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Typed core surface for Sacred.Vote document-capture: claims, attestations, errors."
+description = "Typed core surface for document-capture identity verification: claims, attestations, errors, per-stage diagnostic signals."
 
 [dependencies]
 serde.workspace = true

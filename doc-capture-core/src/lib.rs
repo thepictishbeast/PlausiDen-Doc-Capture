@@ -1,12 +1,13 @@
-//! `doc-capture-core` — typed surface for Sacred.Vote document capture.
+//! `doc-capture-core` — typed surface for document-capture identity
+//! verification.
 //!
 //! Defines the data structures every downstream pipeline stage
 //! produces or consumes:
 //!
 //!   - [`DocumentClaims`] — the parsed identity fields. Output of
 //!     OCR + MRZ + PDF417 stages, consumed by attestation.
-//!   - [`Attestation`] — cryptographic claim that "this voter holds
-//!     this document." What the sidecar returns to Sacred.Vote.
+//!   - [`Attestation`] — cryptographic claim that "this person holds
+//!     this document." What the substrate returns to the consumer.
 //!   - [`PipelineSignals`] — per-stage diagnostic signals (OCR
 //!     confidence, MRZ checksum results, tamper flags, face-match
 //!     distance). Kept separate from the attestation so an operator
@@ -16,6 +17,11 @@
 //! No image bytes anywhere in this crate — only parsed claims, hashes,
 //! and structured signals. The image-handling crates live one tier up
 //! and never leak their inputs into core types.
+//!
+//! Consumer-agnostic: this crate makes no assumption about who the
+//! end user is (account holder, applicant, member, participant). The salt
+//! argument to [`hash_field`] is whatever stable opaque identifier
+//! the consumer wants to bind the attestation to.
 
 #![deny(missing_docs)]
 
@@ -56,12 +62,12 @@ pub struct DocumentClaims {
     pub nationality: Option<String>,
 }
 
-/// Cryptographic attestation Sacred.Vote stores in
-/// `zktls_verifications` after a successful capture.
+/// Cryptographic attestation the consumer stores after a successful
+/// capture.
 ///
 /// The attestation contains HASHED claims and per-stage signal
 /// summaries. The raw document image is never included; the raw
-/// claims are hashed (with a per-voter salt the caller supplies)
+/// claims are hashed (with a per-subject salt the caller supplies)
 /// before being placed in `disclosed_field_hashes`.
 // Eq is NOT derivable here: PipelineSignals contains f32 fields
 // (NaN). PartialEq is sufficient for the assertion shapes the
@@ -78,9 +84,10 @@ pub struct Attestation {
     /// disclosure against. `field_name → sha256_hex(salt || value)`.
     pub disclosed_field_hashes: std::collections::BTreeMap<String, String>,
     /// Field values disclosed in plaintext per the caller's
-    /// disclosure mask. Sacred.Vote disclosure typically reveals
-    /// `issuing_state`, `age_over_18`, possibly `surname` + first
-    /// initial. Names + DOB + document number stay redacted.
+    /// disclosure mask. Privacy-preserving disclosure typically
+    /// reveals `issuing_state`, `age_over_18`, possibly `surname`
+    /// plus first initial. Names + DOB + document number stay
+    /// redacted unless the consumer explicitly opts them in.
     pub disclosed_claims: std::collections::BTreeMap<String, serde_json::Value>,
     /// Per-stage signal summary (see [`PipelineSignals`]).
     pub signals: PipelineSignals,
@@ -231,9 +238,11 @@ pub enum Error {
 /// single attribute (which would otherwise be feasible for
 /// low-entropy fields like sex or state).
 ///
-/// The `salt` argument is supplied by Sacred.Vote per voter and is
-/// typically the `voter_hash` itself, so the per-attestation hash
-/// of "issuing_state=UT" is voter-distinguishable in storage.
+/// The `salt` argument is supplied by the consumer per-subject and
+/// is typically a stable opaque identifier the consumer already
+/// holds (e.g. a hashed user ID), so the per-attestation hash of
+/// "issuing_state=UT" is subject-distinguishable in storage and
+/// cannot collide across subjects.
 pub fn hash_field(salt: &[u8], field_name: &str, value: &str) -> String {
     use sha2::Digest;
     let mut h = sha2::Sha256::new();
@@ -251,23 +260,23 @@ mod tests {
 
     #[test]
     fn hash_field_is_deterministic() {
-        let h1 = hash_field(b"voter-salt-1", "issuing_state", "UT");
-        let h2 = hash_field(b"voter-salt-1", "issuing_state", "UT");
+        let h1 = hash_field(b"subject-salt-1", "issuing_state", "UT");
+        let h2 = hash_field(b"subject-salt-1", "issuing_state", "UT");
         assert_eq!(h1, h2);
         assert_eq!(h1.len(), 64); // sha256 hex = 64 chars
     }
 
     #[test]
     fn hash_field_changes_with_salt() {
-        let a = hash_field(b"voter-1", "state", "UT");
-        let b = hash_field(b"voter-2", "state", "UT");
+        let a = hash_field(b"subject-1", "state", "UT");
+        let b = hash_field(b"subject-2", "state", "UT");
         assert_ne!(a, b);
     }
 
     #[test]
     fn hash_field_changes_with_value() {
-        let a = hash_field(b"voter", "state", "UT");
-        let b = hash_field(b"voter", "state", "CA");
+        let a = hash_field(b"subject", "state", "UT");
+        let b = hash_field(b"subject", "state", "CA");
         assert_ne!(a, b);
     }
 
@@ -275,8 +284,8 @@ mod tests {
     fn hash_field_changes_with_field_name() {
         // Verifies the field_name boundary in the hash input prevents
         // collisions across fields with the same value.
-        let a = hash_field(b"voter", "state", "M");
-        let b = hash_field(b"voter", "sex", "M");
+        let a = hash_field(b"subject", "state", "M");
+        let b = hash_field(b"subject", "sex", "M");
         assert_ne!(a, b);
     }
 

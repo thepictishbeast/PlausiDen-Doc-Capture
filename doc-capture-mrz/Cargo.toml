@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "ICAO 9303 Machine Readable Zone (MRZ) parser + checksum verification for Sacred.Vote document-capture."
+description = "ICAO 9303 Machine Readable Zone (MRZ) parser + checksum verification. Decodes passport / TD1 / TD2 / TD3 MRZs and verifies all per-field check digits."
 
 [dependencies]
 doc-capture-core = { path = "../doc-capture-core" }
