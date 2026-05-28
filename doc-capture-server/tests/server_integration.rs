@@ -40,8 +40,22 @@ async fn info_returns_server_identity() {
     assert_eq!(info["name"], "PlausiDen-Doc-Capture");
     let stages = info["stages_wired"].as_array().unwrap();
     let stage_names: Vec<&str> = stages.iter().map(|v| v.as_str().unwrap()).collect();
-    assert!(stage_names.contains(&"mrz"));
-    assert!(stage_names.contains(&"pdf417_aamva"));
+    // /info must reflect what pipeline::run actually executes. All
+    // five stages below are wired (see doc-capture-server/src/pipeline.rs);
+    // only liveness (anti-spoofing on the selfie) remains unimplemented.
+    for wired in ["mrz", "pdf417_aamva", "ocr", "tamper", "face_match"] {
+        assert!(
+            stage_names.contains(&wired),
+            "{wired} should be reported as wired"
+        );
+    }
+    let pending = info["stages_pending"].as_array().unwrap();
+    let pending_names: Vec<&str> = pending.iter().map(|v| v.as_str().unwrap()).collect();
+    assert!(pending_names.contains(&"liveness"));
+    assert!(
+        !pending_names.contains(&"ocr"),
+        "ocr is wired, must not be reported pending"
+    );
 }
 
 #[tokio::test]

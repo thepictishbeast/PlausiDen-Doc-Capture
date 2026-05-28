@@ -49,8 +49,8 @@ pub async fn info(State(state): State<AppState>) -> Json<InfoResponse> {
     Json(InfoResponse {
         name: "PlausiDen-Doc-Capture",
         version: env!("CARGO_PKG_VERSION"),
-        stages_wired: vec!["mrz", "pdf417_aamva"],
-        stages_pending: vec!["ocr", "tamper", "face_match", "liveness"],
+        stages_wired: vec!["mrz", "pdf417_aamva", "ocr", "tamper", "face_match"],
+        stages_pending: vec!["liveness"],
         active_sessions,
     })
 }
