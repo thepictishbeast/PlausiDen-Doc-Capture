@@ -152,10 +152,15 @@ pub fn run(
     // is injected by the server; tests pass a MockOcrEngine with
     // pre-loaded fixtures, production passes TesseractCliEngine
     // (or other future impl).
+    // Captured for the A3 front<->back consistency check (below).
+    let mut front_ocr_text = String::new();
+    let mut front_ocr_conf = 0.0_f32;
     if !input.front_bytes.is_empty() {
         match ocr.recognize(&input.front_bytes, "eng") {
             Ok(ocr_result) => {
                 signals.ocr = Some(ocr_result.signals.clone());
+                front_ocr_text = ocr_result.text.clone();
+                front_ocr_conf = ocr_result.signals.text_confidence;
                 // OCR-derived MRZ fallback: when the caller did NOT
                 // supply machine-read MRZ lines (claims_from_mrz is
                 // still None) but the OCR'd front contains an ICAO
@@ -238,6 +243,27 @@ pub fn run(
                 "cross-validation: surname MRZ={:?} AAMVA={:?}",
                 m.surname, a.surname
             ));
+        }
+    }
+
+    // A3: front-print <-> back-barcode consistency (US DL flow). When we
+    // have AAMVA claims from the back AND the front OCR is strong enough
+    // to judge, the front must contain the barcode's identity (surname /
+    // given name / document number). A readable front that contains NONE
+    // of them means the front and back are not the same card — a forged
+    // barcode on a mismatched front, or two different IDs photographed.
+    // Skipped when the front OCR is too weak to judge, so a genuine-but-
+    // unreadable front is never falsely rejected (human review remains
+    // the backstop).
+    if let Some(a) = &claims_from_aamva {
+        if let Some(reason) = front_back_mismatch(
+            &front_ocr_text,
+            front_ocr_conf,
+            &a.surname,
+            &a.given_names,
+            &a.document_number,
+        ) {
+            stage_errors.push(format!("cross-validation: {reason}"));
         }
     }
 
@@ -480,6 +506,99 @@ fn age_over(iso_dob: &str, years_required: u32) -> Option<bool> {
     // date is well-formed.
     let age_today = today.years_since(dob).unwrap_or(0);
     Some(age_today >= years_required)
+}
+
+/// Normalize text to uppercase ASCII alphanumerics only (drop spaces,
+/// punctuation, separators) so noisy OCR output and barcode field
+/// values can be compared by tolerant substring containment.
+fn normalize_alnum_upper(s: &str) -> String {
+    s.chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_uppercase())
+        .collect()
+}
+
+/// A3 front<->back consistency check.
+///
+/// Returns `Some(reason)` when the front OCR text is strong enough to
+/// judge yet contains NONE of the back barcode's identity tokens
+/// (surname / given name / document number) — a front/back mismatch.
+/// Returns `None` when the front is consistent with the back, OR when
+/// the front OCR is too weak to judge (low confidence / too little
+/// text), so a genuine-but-unreadable front is never falsely rejected.
+fn front_back_mismatch(
+    front_text: &str,
+    front_conf: f32,
+    surname: &str,
+    given: &str,
+    doc_num: &str,
+) -> Option<String> {
+    let front = normalize_alnum_upper(front_text);
+    // Inconclusive when the front OCR is weak: low confidence or too
+    // little recognized text to draw any conclusion from.
+    if front_conf < 0.35 || front.len() < 25 {
+        return None;
+    }
+    let mut any_checked = false;
+    let mut any_present = false;
+    for tok in [surname, given, doc_num] {
+        let t = normalize_alnum_upper(tok);
+        // Only meaningful tokens (>=3 chars) — skip single initials etc.
+        if t.len() >= 3 {
+            any_checked = true;
+            if front.contains(&t) {
+                any_present = true;
+                break;
+            }
+        }
+    }
+    if any_checked && !any_present {
+        Some("front print does not contain the back-barcode identity".to_string())
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod a3_cross_check_tests {
+    use super::{front_back_mismatch, normalize_alnum_upper};
+
+    #[test]
+    fn normalize_strips_to_alnum_upper() {
+        assert_eq!(normalize_alnum_upper("Doe, John"), "DOEJOHN");
+        assert_eq!(normalize_alnum_upper("X-123 456"), "X123456");
+        assert_eq!(normalize_alnum_upper(""), "");
+    }
+
+    #[test]
+    fn consistent_front_passes() {
+        // Front OCR contains the surname → consistent.
+        let front = "UTAH DRIVER LICENSE\nDOE JOHN MICHAEL\nDL X12345678\n4900000";
+        assert!(front_back_mismatch(front, 0.85, "DOE", "JOHN MICHAEL", "X12345678").is_none());
+    }
+
+    #[test]
+    fn consistent_on_doc_number_only() {
+        // Surname mis-OCR'd but the document number is present → pass.
+        let front = "UTAH DRIVER LICENSE\nD0E J0HN\nDL X12345678 CLASS D";
+        assert!(front_back_mismatch(front, 0.6, "DOE", "JOHN", "X12345678").is_none());
+    }
+
+    #[test]
+    fn mismatched_front_is_flagged() {
+        // A readable front for a DIFFERENT person — none of the back's
+        // identity tokens appear.
+        let front = "UTAH DRIVER LICENSE\nSMITH JANE ANN\nDL Z99887766 CLASS D";
+        assert!(front_back_mismatch(front, 0.85, "DOE", "JOHN", "X12345678").is_some());
+    }
+
+    #[test]
+    fn weak_ocr_is_inconclusive_not_rejected() {
+        // Empty / low-confidence / too-short front → never a hard fail.
+        assert!(front_back_mismatch("", 0.0, "DOE", "JOHN", "X12345678").is_none());
+        assert!(front_back_mismatch("DOE JOHN X12345678 UTAH DL CLASS", 0.10, "ZZZ", "YYY", "Q000").is_none());
+        assert!(front_back_mismatch("DOE", 0.9, "ZZZ", "YYY", "Q000").is_none());
+    }
 }
 
 #[cfg(test)]

@@ -8,12 +8,15 @@ repository.workspace = true
 description = "axum HTTP server for PlausiDen-Doc-Capture. Exposes /health, /info, /capture endpoints wiring all pipeline stages."
 
 [features]
-# Default build wires the Mock OCR engine only — no native deps, so
-# workspace builds/tests run anywhere. Enable `tesseract-cli` to let
-# the binary select a real Tesseract-backed engine at runtime (see
-# `DOC_CAPTURE_OCR_ENGINE` in `main.rs`); it requires the `tesseract`
-# binary on PATH.
-default = []
+# `tesseract-cli` is ON BY DEFAULT so a plain `cargo build` produces a
+# binary that CAN run real OCR (A3) — a feature-less build silently
+# reverts the front-OCR/cross-check to the Mock engine, which was the
+# original "front reads blank" bug. The feature only *compiles* the
+# Tesseract CLI adapter (no build-time native dep); whether it is used
+# is still a runtime choice via `DOC_CAPTURE_OCR_ENGINE` in `main.rs`,
+# and it needs the `tesseract` binary on PATH at runtime. To build the
+# pure-Mock variant (e.g. a host without tesseract): `--no-default-features`.
+default = ["tesseract-cli"]
 tesseract-cli = ["doc-capture-ocr/tesseract-cli"]
 
 [lib]
