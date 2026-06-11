@@ -10,6 +10,7 @@
 //! face-match (selfie vs document portrait). Liveness (selfie
 //! anti-spoofing) is the one stage still unimplemented.
 
+use chrono::Datelike;
 use doc_capture_core::{hash_field, Attestation, DocumentClaims, Error, PipelineSignals};
 use doc_capture_face::FaceMatchEngine;
 use doc_capture_ocr::OcrEngine;
@@ -96,12 +97,27 @@ pub fn run(
         }
     }
 
+    // Current year for A4 DOB-plausibility (injected into the AAMVA
+    // validator so that crate stays chrono-free).
+    let current_year = chrono::Utc::now().year();
+
     // ── PDF417 + AAMVA stage (US DL / state ID) ──────────────────
     if !input.back_bytes.is_empty() {
         match doc_capture_pdf417::decode_pdf417_from_image_bytes(&input.back_bytes) {
             Ok(text) => match doc_capture_aamva::parse_aamva(&text) {
                 Ok(aamva) => {
                     signals.pdf417 = Some(aamva.to_signals(true, true));
+                    // A4: structural / plausibility validation. A clean
+                    // PDF417 decode does NOT prove the content is plausible
+                    // (a forged barcode parses fine), so record each hard
+                    // structural failure — missing mandatory fields,
+                    // malformed dates, impossible DOB, non-DL/ID type,
+                    // non-6-digit IIN — as a stage error, which fails the
+                    // verdict. This raises the forgery bar; it is NOT an
+                    // authenticity proof (US AAMVA barcodes are unsigned).
+                    for issue in aamva.validate(current_year).issues {
+                        stage_errors.push(format!("aamva-structure: {issue}"));
+                    }
                     claims_from_aamva = Some(DocumentClaims {
                         issuing_country: "USA".to_string(),
                         issuing_state: Some(aamva.address_state.clone()),
@@ -387,7 +403,8 @@ fn names_match(a: &str, b: &str) -> bool {
 /// All claim fields go in `disclosed_field_hashes` (so the consumer
 /// can later verify a claim disclosure without keeping the raw
 /// value). A minimal default disclosure surfaces only
-/// `issuing_state` and `age_over_18` in `disclosed_claims` —
+/// `issuing_state`, `age_over_18`, and `expiration_date` in
+/// `disclosed_claims` (the last so the app can flag an expired ID) —
 /// consumers who need more can compute it themselves from the
 /// `disclosed_field_hashes` by supplying the salted plaintext.
 fn build_attestation(
@@ -425,6 +442,19 @@ fn build_attestation(
     // consumers need it.
     if let Some(age_ok) = age_over(&claims.date_of_birth, 18) {
         disclosed.insert("age_over_18".to_string(), serde_json::Value::Bool(age_ok));
+    }
+    // Expiration date is disclosed in plaintext (format YYYY-MM-DD, see
+    // DocumentClaims). It is ALSO hashed above; we surface the plaintext so the
+    // verifying app can detect an EXPIRED document and tell the holder
+    // specifically which problem occurred ("your ID expired on …"), instead of a
+    // generic "retake — make sure it's well-lit" message. Low sensitivity: it is
+    // printed on the face of the card the holder is presenting, returned only to
+    // the loopback proxy, and never persisted.
+    if !claims.expiration_date.is_empty() {
+        disclosed.insert(
+            "expiration_date".to_string(),
+            serde_json::Value::String(claims.expiration_date.clone()),
+        );
     }
 
     Attestation {
@@ -640,6 +670,13 @@ mod tests {
         assert_eq!(att.claim_type, "document_capture_v1");
         assert!(att.disclosed_field_hashes.contains_key("surname"));
         assert!(att.disclosed_claims.contains_key("age_over_18"));
+        // Expiration date must be disclosed in plaintext (YYYY-MM-DD) so the
+        // verifying app can detect an expired ID. ERIKSSON's MRZ expiry is
+        // 120415 → 2012-04-15.
+        assert_eq!(
+            att.disclosed_claims.get("expiration_date"),
+            Some(&serde_json::Value::String("2012-04-15".to_string())),
+        );
     }
 
     #[test]

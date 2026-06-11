@@ -101,7 +101,152 @@ impl ParsedAamva {
             _ => "X",
         }
     }
+
+    /// Structural / plausibility validation of the decoded payload (A4).
+    ///
+    /// A successful PDF417 decode + AAMVA parse only prove the barcode
+    /// was *well-formed enough to read*. They do NOT prove the content
+    /// is plausible — a hand-crafted forged barcode parses cleanly. This
+    /// checks the decoded fields against invariants every genuine AAMVA
+    /// card satisfies, so an obviously-bogus payload (missing mandatory
+    /// fields, malformed dates, impossible DOB, non-DL/ID type, non-6-
+    /// digit IIN) is rejected even though it "decoded".
+    ///
+    /// This is NOT an authenticity proof — US AAMVA barcodes are
+    /// unsigned, so a careful forger can still produce a structurally
+    /// valid payload. It raises the forgery bar; it cannot prove the
+    /// data is genuine.
+    ///
+    /// `current_year` is injected so the crate stays `chrono`-free and
+    /// the DOB-plausibility window is deterministic in tests.
+    #[must_use]
+    pub fn validate(&self, current_year: i32) -> AamvaValidation {
+        let mut issues = Vec::new();
+
+        // IIN: 6 ASCII digits is a HARD requirement; membership in the
+        // known-jurisdiction registry is a SOFT signal only (an
+        // unrecognized but well-formed IIN must NOT hard-fail, since the
+        // embedded registry can lag new or reissued IIN assignments).
+        let iin_well_formed =
+            self.issuer_id.len() == 6 && self.issuer_id.bytes().all(|b| b.is_ascii_digit());
+        if !iin_well_formed {
+            issues.push(format!("IIN not 6 digits ({:?})", self.issuer_id));
+        }
+        let iin_known = KNOWN_IINS.contains(&self.issuer_id.as_str());
+
+        // Mandatory identity fields a real card always carries.
+        let required_fields_present = !self.family_name.trim().is_empty()
+            && !self.first_name.trim().is_empty()
+            && !self.document_number.trim().is_empty();
+        if !required_fields_present {
+            issues.push("missing required field (surname / given name / document number)".into());
+        }
+
+        // Dates must be well-formed ISO (parse_aamva emits "" on a
+        // malformed AAMVA date, which fails this check).
+        let dob_ok = is_iso_date(&self.date_of_birth);
+        let exp_ok = is_iso_date(&self.expiration_date);
+        let dates_well_formed = dob_ok && exp_ok;
+        if !dob_ok {
+            issues.push("date of birth missing or malformed".into());
+        }
+        if !exp_ok {
+            issues.push("expiration date missing or malformed".into());
+        }
+
+        // DOB plausibility: implied age between 14 and 120 years.
+        let dob_plausible = iso_year(&self.date_of_birth)
+            .is_some_and(|y| y >= current_year - 120 && y <= current_year - 14);
+        if dob_ok && !dob_plausible {
+            issues.push("date of birth implausible (age outside 14..120)".into());
+        }
+
+        let document_type_valid = self.document_type == "DL" || self.document_type == "ID";
+        if !document_type_valid {
+            issues.push(format!("document type not DL/ID ({:?})", self.document_type));
+        }
+
+        AamvaValidation {
+            iin_known,
+            iin_well_formed,
+            required_fields_present,
+            dates_well_formed,
+            dob_plausible,
+            document_type_valid,
+            issues,
+        }
+    }
 }
+
+/// Outcome of [`ParsedAamva::validate`] — A4 structural/plausibility checks.
+///
+/// `issues` is empty exactly when every HARD check passed. `iin_known`
+/// is a SOFT signal and is intentionally NOT part of the hard pass/fail
+/// (an unrecognized 6-digit IIN does not fail validation).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AamvaValidation {
+    /// IIN matches a known US/Canada jurisdiction (soft signal only).
+    pub iin_known: bool,
+    /// IIN is exactly 6 ASCII digits (hard requirement).
+    pub iin_well_formed: bool,
+    /// Surname, given name, and document number are all present.
+    pub required_fields_present: bool,
+    /// DOB and expiration both parsed to well-formed ISO dates.
+    pub dates_well_formed: bool,
+    /// DOB implies a plausible human age (14..120).
+    pub dob_plausible: bool,
+    /// `document_type` is "DL" or "ID".
+    pub document_type_valid: bool,
+    /// Human-readable hard-check failures; empty == structurally valid.
+    pub issues: Vec<String>,
+}
+
+impl AamvaValidation {
+    /// True when every HARD structural check passed (`iin_known` is
+    /// soft and excluded).
+    #[must_use]
+    pub fn is_structurally_valid(&self) -> bool {
+        self.issues.is_empty()
+    }
+}
+
+/// True for a well-formed `YYYY-MM-DD` ASCII date string.
+fn is_iso_date(s: &str) -> bool {
+    let b = s.as_bytes();
+    s.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && s[0..4].bytes().all(|c| c.is_ascii_digit())
+        && s[5..7].bytes().all(|c| c.is_ascii_digit())
+        && s[8..10].bytes().all(|c| c.is_ascii_digit())
+}
+
+/// Year component of a well-formed ISO date, else `None`.
+fn iso_year(s: &str) -> Option<i32> {
+    if is_iso_date(s) {
+        s[0..4].parse().ok()
+    } else {
+        None
+    }
+}
+
+/// Known AAMVA Issuer Identification Numbers — US states + DC +
+/// territories + Canadian provinces. Used ONLY for the soft
+/// [`AamvaValidation::iin_known`] signal; an unrecognized IIN is never
+/// hard-rejected (registry can lag new assignments).
+const KNOWN_IINS: &[&str] = &[
+    // US states + DC
+    "636033", "636059", "636026", "636021", "636014", "636020", "636006", "636011", "636043",
+    "636010", "636055", "636047", "636050", "636035", "636037", "636018", "636022", "636046",
+    "636007", "636041", "636003", "636002", "636032", "636038", "636051", "636030", "636008",
+    "636054", "636049", "636039", "636036", "636009", "636001", "636004", "636034", "636023",
+    "636058", "636029", "636025", "636052", "636005", "636042", "636053", "636015", "636040",
+    "636024", "636000", "636045", "636061", "636031", "636060",
+    // US territories (Guam / Puerto Rico / US Virgin Islands)
+    "636019", "636056", "636062",
+    // Canadian provinces (common AAMVA-registered IINs)
+    "636028", "636017", "636048", "636044", "604427", "636012", "636013",
+];
 
 /// Parse an AAMVA barcode TEXT payload.
 ///
@@ -469,5 +614,93 @@ mod tests {
         assert!(!sig.barcode_decoded);
         assert!(!sig.pdf417_crc_valid);
         assert!(sig.aamva_header_valid);
+    }
+
+    // ── A4 structural / plausibility validation ──────────────────
+
+    /// A fully-valid Utah DL parsed from the synthetic payload, as a
+    /// base for negative mutations.
+    fn valid_parsed() -> ParsedAamva {
+        parse_aamva(&synth_payload()).unwrap()
+    }
+
+    #[test]
+    fn validate_passes_on_genuine_card() {
+        // DOB 1985-01-15 → age 41 in 2026: plausible. Utah IIN known.
+        let v = valid_parsed().validate(2026);
+        assert!(v.is_structurally_valid(), "issues: {:?}", v.issues);
+        assert!(v.iin_known);
+        assert!(v.iin_well_formed);
+        assert!(v.required_fields_present);
+        assert!(v.dates_well_formed);
+        assert!(v.dob_plausible);
+        assert!(v.document_type_valid);
+    }
+
+    #[test]
+    fn validate_flags_missing_required_field() {
+        let mut p = valid_parsed();
+        p.family_name = String::new();
+        let v = p.validate(2026);
+        assert!(!v.required_fields_present);
+        assert!(!v.is_structurally_valid());
+    }
+
+    #[test]
+    fn validate_flags_non_six_digit_iin() {
+        let mut p = valid_parsed();
+        p.issuer_id = "12AB".into();
+        let v = p.validate(2026);
+        assert!(!v.iin_well_formed);
+        assert!(!v.is_structurally_valid());
+    }
+
+    #[test]
+    fn validate_flags_implausible_dob() {
+        let mut p = valid_parsed();
+        p.date_of_birth = "2025-01-01".into(); // age ~1 in 2026
+        let v = p.validate(2026);
+        assert!(v.dates_well_formed); // well-formed, but…
+        assert!(!v.dob_plausible);
+        assert!(!v.is_structurally_valid());
+    }
+
+    #[test]
+    fn validate_flags_malformed_date() {
+        let mut p = valid_parsed();
+        p.expiration_date = String::new(); // parse_aamva emits "" on bad date
+        let v = p.validate(2026);
+        assert!(!v.dates_well_formed);
+        assert!(!v.is_structurally_valid());
+    }
+
+    #[test]
+    fn validate_flags_wrong_document_type() {
+        let mut p = valid_parsed();
+        p.document_type = "ZZ".into();
+        let v = p.validate(2026);
+        assert!(!v.document_type_valid);
+        assert!(!v.is_structurally_valid());
+    }
+
+    #[test]
+    fn validate_unknown_iin_is_not_a_hard_fail() {
+        // 6-digit but not in the registry: soft signal off, still valid.
+        let mut p = valid_parsed();
+        p.issuer_id = "636099".into();
+        let v = p.validate(2026);
+        assert!(!v.iin_known);
+        assert!(v.iin_well_formed);
+        assert!(v.is_structurally_valid(), "unknown IIN must not hard-fail");
+    }
+
+    #[test]
+    fn iso_date_helpers() {
+        assert!(is_iso_date("1985-01-15"));
+        assert!(!is_iso_date("19850115"));
+        assert!(!is_iso_date("1985-1-5"));
+        assert!(!is_iso_date(""));
+        assert_eq!(iso_year("1985-01-15"), Some(1985));
+        assert_eq!(iso_year("bad"), None);
     }
 }
